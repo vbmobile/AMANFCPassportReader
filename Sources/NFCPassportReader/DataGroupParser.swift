@@ -21,9 +21,13 @@ class DataGroupParser {
     
     func parseDG( data : [UInt8] ) throws -> DataGroup {
         
-        let header = data[0..<4]
-        
-        let dg = try tagToDG(header[0])
+        // Read from the chip, so the length is not ours to trust: an element too
+        // short to carry a tag must be rejected rather than sliced.
+        guard let tag = data.first else {
+            throw NFCPassportReaderError.InvalidASN1Value
+        }
+
+        let dg = try tagToDG(tag)
 
         return try dg.init(data)
     }

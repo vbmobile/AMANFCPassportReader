@@ -187,4 +187,42 @@ final class DataGroupParsingTests: XCTestCase {
         ("testCOMDatagroupParsing", testCOMDatagroupParsing),
     ]
     
+    // Every case below is chip-supplied data: before these guards each one
+    // sliced out of bounds and trapped instead of surfacing an error.
+    func testDatagroupShorterThanATagIsRejected() {
+        let dgp = DataGroupParser()
+        for truncated in [[UInt8](), [0x61], [0x61, 0x02], [0x61, 0x02, 0x5F]] {
+            XCTAssertThrowsError(try dgp.parseDG(data: truncated))
+        }
+    }
+
+    func testDeclaredLengthLongerThanContentIsRejected() {
+        // DG1 claiming 90 bytes of MRZ but carrying 4.
+        let tag: [UInt8] = [0x5F, 0x1F, 0x5A, 0x50, 0x3C, 0x47, 0x42]
+        let dg1 = try! [0x61] + toAsn1Length(tag.count) + tag
+
+        XCTAssertThrowsError(try DataGroupParser().parseDG(data: dg1))
+    }
+
+    func testMrzTooShortForItsDocumentTypeIsRejected() {
+        // A well-formed element whose MRZ body is neither TD1 nor TD2 sized and
+        // is too short for the TD3 offsets it would otherwise be read at.
+        let mrz = "P<GBRTHATCHER<<BOB<<<<<<<<<<<"
+        let mrzBin = [UInt8](mrz.data(using: .utf8)!)
+        let tag = try! [0x5F, 0x1F] + toAsn1Length(mrzBin.count) + mrzBin
+        let dg1 = try! [0x61] + toAsn1Length(tag.count) + tag
+
+        XCTAssertThrowsError(try DataGroupParser().parseDG(data: dg1))
+    }
+
+    func testValidDatagroup1StillParses() {
+        let mrz = "P<GBRTHATCHER<<BOB<<<<<<<<<<<<<<<<<<<<<<<<<<7125143269GBR3906022M1601013<<<<<<<<<<<<<<08"
+        let mrzBin = [UInt8](mrz.data(using: .utf8)!)
+        let tag = try! [0x5F, 0x1F] + toAsn1Length(mrzBin.count) + mrzBin
+        let dg1 = try! [0x61] + toAsn1Length(tag.count) + tag
+
+        let dg = try? DataGroupParser().parseDG(data: dg1)
+        XCTAssertEqual((dg as? DataGroup1)?.elements["5A"], "712514326")
+    }
+
 }

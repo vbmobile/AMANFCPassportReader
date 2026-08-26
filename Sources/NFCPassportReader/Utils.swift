@@ -284,13 +284,24 @@ public func asn1Length( _ data: ArraySlice<UInt8> ) throws -> (Int, Int) {
 
 @available(iOS 13, macOS 10.15, *)
 public func asn1Length(_ data : [UInt8]) throws -> (Int, Int)  {
-    if data[0] < 0x80 {
-        return (Int(binToHex(data[0])), 1)
+    // Lengths arrive from the chip, so a form that announces more bytes than it
+    // carries has to be reported rather than read past the end.
+    guard let first = data.first else {
+        throw NFCPassportReaderError.CannotDecodeASN1Length
     }
-    if data[0] == 0x81 {
+    if first < 0x80 {
+        return (Int(binToHex(first)), 1)
+    }
+    if first == 0x81 {
+        guard data.count >= 2 else {
+            throw NFCPassportReaderError.CannotDecodeASN1Length
+        }
         return (Int(binToHex(data[1])), 2)
     }
-    if data[0] == 0x82 {
+    if first == 0x82 {
+        guard data.count >= 3 else {
+            throw NFCPassportReaderError.CannotDecodeASN1Length
+        }
         let val = binToHex([UInt8](data[1..<3]))
         return (Int(val), 3)
     }
