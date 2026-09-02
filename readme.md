@@ -4,7 +4,7 @@ This is the Amadeus fork of [AndyQ/NFCPassportReader](https://github.com/AndyQ/N
 
 What differs from upstream:
 
-* The shared TLV walker (`DataGroup`) and DG1's MRZ parsing are bounds-checked: a truncated element or an MRZ too short for its document type is rejected with an error instead of trapping. The other data-group parsers are unchanged from upstream.
+* Chip data is bounds-checked where upstream trusted it: the ASN.1 length decoder (`asn1Length`), the data-group dispatcher (`DataGroupParser.parseDG`), the shared TLV walker (`DataGroup`) and DG1's MRZ parsing reject a length form shorter than it announces, a truncated element, or an MRZ too short for its document type with an error instead of trapping. `asn1Length` is public, so callers that previously crashed on a 0-, 1- or 2-byte input now receive `CannotDecodeASN1Length`. The other data-group parsers are unchanged from upstream.
 * Versions follow `<upstream>-vb.<n>` (for example `2.3.3-vb.1`), where `<n>` counts fork revisions on top of the given upstream release.
 
 Branching and pulling upstream:
