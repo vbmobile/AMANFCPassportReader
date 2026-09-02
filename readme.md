@@ -1,3 +1,19 @@
+# NFCPassportReader (Amadeus fork)
+
+This is the Amadeus fork of [AndyQ/NFCPassportReader](https://github.com/AndyQ/NFCPassportReader), consumed by the `AMADocRFIDReadiOS` document-reader provider. It is distributed through Swift Package Manager only.
+
+What differs from upstream:
+
+* Chip data parsing is bounds-checked: malformed or truncated data groups are rejected with an error instead of trapping.
+* Versions follow `<upstream>-vb.<n>` (for example `2.3.3-vb.1`), where `<n>` counts fork revisions on top of the given upstream release.
+
+Branching and pulling upstream:
+
+* `main` mirrors upstream and carries no fork changes; fast-forward it to the upstream tag being adopted.
+* `develop` carries the fork patches. To pull a new upstream release, rebase (or merge) `develop` onto the new `main`, then cut `<upstream>-vb.1`.
+
+---
+
 # NFCPassportReader
 
 This package handles reading an NFC Enabled passport using iOS 15 CoreNFC APIS

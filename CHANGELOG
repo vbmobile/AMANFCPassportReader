@@ -1,3 +1,7 @@
+2.3.3-vb.1
+   Amadeus fork of upstream V2.3.3 (SPM only; CocoaPods podspec and example dropped)
+   Reject malformed chip data instead of trapping
+   Let the test target depend on the library it tests
 V2.3.3
    Added Optional Data element to passport model - pulls out element 53 from DG1
 V2.3.2
