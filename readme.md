@@ -1,10 +1,10 @@
 # NFCPassportReader (Amadeus fork)
 
-This is the Amadeus fork of [AndyQ/NFCPassportReader](https://github.com/AndyQ/NFCPassportReader), consumed by the `AMADocRFIDReadiOS` document-reader provider. It is distributed through Swift Package Manager only.
+This is the Amadeus fork of [AndyQ/NFCPassportReader](https://github.com/AndyQ/NFCPassportReader), intended for the `AMADocRFIDReadiOS` document-reader provider in place of the upstream package. It is distributed through Swift Package Manager only.
 
 What differs from upstream:
 
-* Chip data parsing is bounds-checked: malformed or truncated data groups are rejected with an error instead of trapping.
+* The shared TLV walker (`DataGroup`) and DG1's MRZ parsing are bounds-checked: a truncated element or an MRZ too short for its document type is rejected with an error instead of trapping. The other data-group parsers are unchanged from upstream.
 * Versions follow `<upstream>-vb.<n>` (for example `2.3.3-vb.1`), where `<n>` counts fork revisions on top of the given upstream release.
 
 Branching and pulling upstream:
