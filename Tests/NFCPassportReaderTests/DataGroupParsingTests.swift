@@ -30,10 +30,11 @@ final class DataGroupParsingTests: XCTestCase {
     
     func testDatagroup2ParsingJPEG2000() {
         
-        // This is a cut down version of the DG2 record. It contains everything up to the end of the image header - no actuall image data as its way too big to include here
-        // I've also adjusted the record lengths accordingly
+        // This is a cut down version of the DG2 record. It contains everything up to the end of the image header, followed by a
+        // JP2 signature box and a jp2c box holding an empty codestream (SOC + EOC) so the image-boundary check can find the end of the image.
+        // No actual image data as its way too big to include here. I've also adjusted the record lengths accordingly
         
-        let dg2 = hexRepToBin("75617F61570201017F6082203FA1128002010081010282010087020101880200085F2E38464143003031300000002026000100002018000000000000000000010000000000000001000000000000000000000000000C6A5020200D0A")
+        let dg2 = hexRepToBin("75617F61570201017F6082203FA1128002010081010282010087020101880200085F2E46464143003031300000002026000100002018000000000000000000010000000000000001000000000000000000000000000C6A5020200D0A870A0000000C6A703263FF4FFFD9")
         
         let dgp = DataGroupParser()
         XCTAssertNoThrow(try dgp.parseDG(data: dg2)) { dg in
@@ -45,10 +46,11 @@ final class DataGroupParsingTests: XCTestCase {
     
     func testDatagroup2ParsingJPEG() {
         
-        // This is a cut down version of the DG2 record. It contains everything up to the begininnig of what would be the image data - no actual image data as its way too big to include here
+        // This is a cut down version of the DG2 record. It contains everything up to the beginning of what would be the image data, followed by
+        // the JPEG EOI marker so the image-boundary check can find the end of the image. No actual image data as its way too big to include here.
         // I've also adjusted the record lengths accordingly
         
-        let dg2 = hexRepToBin("75617F618220470201017F6082203FA1128002010081010282010087020101880200085F2E3846414300303130000000202600010000201800000000000000000001000000000000000100000000000000000000FFD8FFE000104A464946")
+        let dg2 = hexRepToBin("75617F618220470201017F6082203FA1128002010081010282010087020101880200085F2E3A46414300303130000000202600010000201800000000000000000001000000000000000100000000000000000000FFD8FFE000104A464946FFD9")
         let dgp = DataGroupParser()
         XCTAssertNoThrow(try dgp.parseDG(data: dg2)) { dg in
             XCTAssertNotNil(dg)
@@ -187,4 +189,42 @@ final class DataGroupParsingTests: XCTestCase {
         ("testCOMDatagroupParsing", testCOMDatagroupParsing),
     ]
     
+    // Every case below is chip-supplied data: before these guards each one
+    // sliced out of bounds and trapped instead of surfacing an error.
+    func testDatagroupShorterThanATagIsRejected() {
+        let dgp = DataGroupParser()
+        for truncated in [[UInt8](), [0x61], [0x61, 0x02], [0x61, 0x02, 0x5F]] {
+            XCTAssertThrowsError(try dgp.parseDG(data: truncated))
+        }
+    }
+
+    func testDeclaredLengthLongerThanContentIsRejected() throws {
+        // DG1 claiming 90 bytes of MRZ but carrying 4.
+        let tag: [UInt8] = [0x5F, 0x1F, 0x5A, 0x50, 0x3C, 0x47, 0x42]
+        let dg1 = try [0x61] + toAsn1Length(tag.count) + tag
+
+        XCTAssertThrowsError(try DataGroupParser().parseDG(data: dg1))
+    }
+
+    func testMrzTooShortForItsDocumentTypeIsRejected() throws {
+        // A well-formed element whose MRZ body is neither TD1 nor TD2 sized and
+        // is too short for the TD3 offsets it would otherwise be read at.
+        let mrz = "P<GBRTHATCHER<<BOB<<<<<<<<<<<"
+        let mrzBin = [UInt8](mrz.data(using: .utf8)!)
+        let tag = try [0x5F, 0x1F] + toAsn1Length(mrzBin.count) + mrzBin
+        let dg1 = try [0x61] + toAsn1Length(tag.count) + tag
+
+        XCTAssertThrowsError(try DataGroupParser().parseDG(data: dg1))
+    }
+
+    func testValidDatagroup1StillParses() throws {
+        let mrz = "P<GBRTHATCHER<<BOB<<<<<<<<<<<<<<<<<<<<<<<<<<7125143269GBR3906022M1601013<<<<<<<<<<<<<<08"
+        let mrzBin = [UInt8](mrz.data(using: .utf8)!)
+        let tag = try [0x5F, 0x1F] + toAsn1Length(mrzBin.count) + mrzBin
+        let dg1 = try [0x61] + toAsn1Length(tag.count) + tag
+
+        let dg = try DataGroupParser().parseDG(data: dg1)
+        XCTAssertEqual((dg as? DataGroup1)?.elements["5A"], "712514326")
+    }
+
 }

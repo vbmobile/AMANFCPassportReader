@@ -41,6 +41,11 @@ public class DataGroup1 : DataGroup {
             case .TD2:
                 self.parseTd2(body)
             default:
+                // Anything that is not TD1 or TD2 is read at TD3 offsets, so a
+                // shorter body has to be refused before those offsets are used.
+                guard body.count >= 88 else {
+                    throw NFCPassportReaderError.InvalidASN1Value
+                }
                 self.parseOther(body)
         }
         

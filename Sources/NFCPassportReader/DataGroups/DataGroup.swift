@@ -41,6 +41,9 @@ public class DataGroup {
         }
 
         if binToHex(data[pos]) & 0x0F == 0x0F {
+            guard pos + 2 <= data.count else {
+                throw NFCPassportReaderError.TagNotValid
+            }
             tag = Int(binToHex(data[pos..<pos+2]))
             pos += 2
         } else {
@@ -59,6 +62,11 @@ public class DataGroup {
     
     func getNextValue() throws -> [UInt8] {
         let length = try getNextLength()
+        // A declared length longer than the remaining bytes means the element is
+        // truncated or forged; slicing it would trap.
+        guard pos + length <= data.count else {
+            throw NFCPassportReaderError.InvalidASN1Value
+        }
         let value = [UInt8](data[pos ..< pos+length])
         pos += length
         return value
