@@ -14,7 +14,7 @@
 		A117B7EF2695AD2400E13C18 /* StringUtils.swift in Sources */ = {isa = PBXBuildFile; fileRef = A117B7EA2695AD2400E13C18 /* StringUtils.swift */; };
 		A117B7F22695AE2300E13C18 /* MRZParser in Frameworks */ = {isa = PBXBuildFile; productRef = A117B7F12695AE2300E13C18 /* MRZParser */; };
 		A1298C9F25D53A5C00F5713E /* ViewExt.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1298C9E25D53A5C00F5713E /* ViewExt.swift */; };
-		A13F2A22268EF8BA0097C2D1 /* NFCPassportReader in Frameworks */ = {isa = PBXBuildFile; productRef = A13F2A21268EF8BA0097C2D1 /* NFCPassportReader */; };
+		A13F2A22268EF8BA0097C2D1 /* AMANFCPassportReader in Frameworks */ = {isa = PBXBuildFile; productRef = A13F2A21268EF8BA0097C2D1 /* AMANFCPassportReader */; };
 		A1614B9225D5856600191749 /* ExportPassportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1614B9125D5856600191749 /* ExportPassportView.swift */; };
 		A16EB23122A9E9E10008F53F /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A16EB23022A9E9E10008F53F /* AppDelegate.swift */; };
 		A16EB23322A9E9E10008F53F /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A16EB23222A9E9E10008F53F /* SceneDelegate.swift */; };
@@ -75,7 +75,7 @@
 		A182DE6725DD7EA600341204 /* MRZScannerViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MRZScannerViewController.swift; sourceTree = "<group>"; };
 		A1A13B9425B8A29E0026074C /* UIApplicationExt.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UIApplicationExt.swift; sourceTree = "<group>"; };
 		A1A4C0F625B5E4D70070908B /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = System/Library/Frameworks/Foundation.framework; sourceTree = SDKROOT; };
-		A1AE9E142686235E00D0E764 /* NFCPassportReader */ = {isa = PBXFileReference; lastKnownFileType = folder; name = NFCPassportReader; path = ../..; sourceTree = "<group>"; };
+		A1AE9E142686235E00D0E764 /* AMANFCPassportReader */ = {isa = PBXFileReference; lastKnownFileType = folder; name = AMANFCPassportReader; path = ../..; sourceTree = "<group>"; };
 		A1C234C125DD19DE003FFD79 /* PassportSummaryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PassportSummaryView.swift; sourceTree = "<group>"; };
 		A1CE83AB22C91D1300E3EACF /* StringExt.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StringExt.swift; sourceTree = "<group>"; };
 		A1DD3F3E22C535F00067255C /* masterList.pem */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = masterList.pem; sourceTree = "<group>"; };
@@ -94,7 +94,7 @@
 			files = (
 				A1A4C0F725B5E4D70070908B /* Foundation.framework in Frameworks */,
 				A117B7F22695AE2300E13C18 /* MRZParser in Frameworks */,
-				A13F2A22268EF8BA0097C2D1 /* NFCPassportReader in Frameworks */,
+				A13F2A22268EF8BA0097C2D1 /* AMANFCPassportReader in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -133,7 +133,7 @@
 		A16EB22422A9E9E10008F53F = {
 			isa = PBXGroup;
 			children = (
-				A1AE9E142686235E00D0E764 /* NFCPassportReader */,
+				A1AE9E142686235E00D0E764 /* AMANFCPassportReader */,
 				A16EB22F22A9E9E10008F53F /* NFCPassportReaderApp */,
 				A1EBC50E2370B88D004DD19E /* NFCPassportReaderAppTests */,
 				A16EB22E22A9E9E10008F53F /* Products */,
@@ -238,7 +238,7 @@
 			);
 			name = NFCPassportReaderApp;
 			packageProductDependencies = (
-				A13F2A21268EF8BA0097C2D1 /* NFCPassportReader */,
+				A13F2A21268EF8BA0097C2D1 /* AMANFCPassportReader */,
 				A117B7F12695AE2300E13C18 /* MRZParser */,
 			);
 			productName = NFCTest;
@@ -649,9 +649,9 @@
 			package = A117B7F02695AE2300E13C18 /* XCRemoteSwiftPackageReference "MRZParser" */;
 			productName = MRZParser;
 		};
-		A13F2A21268EF8BA0097C2D1 /* NFCPassportReader */ = {
+		A13F2A21268EF8BA0097C2D1 /* AMANFCPassportReader */ = {
 			isa = XCSwiftPackageProductDependency;
-			productName = NFCPassportReader;
+			productName = AMANFCPassportReader;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

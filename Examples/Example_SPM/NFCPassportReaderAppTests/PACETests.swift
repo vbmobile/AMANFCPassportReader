@@ -8,7 +8,7 @@
 
 import Foundation
 import OpenSSL
-import NFCPassportReader
+import AMANFCPassportReader
 
 // Currently not actual tests - maybe at some point but currently just a holding place for some testing stuff I didn't want to get rid of!
 // Hopefully will re-organise into proper tests!

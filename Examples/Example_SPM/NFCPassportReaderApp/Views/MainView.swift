@@ -9,7 +9,7 @@
 import SwiftUI
 import OSLog
 import Combine
-import NFCPassportReader
+import AMANFCPassportReader
 import UniformTypeIdentifiers
 import MRZParser
 

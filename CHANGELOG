@@ -1,3 +1,7 @@
+2.3.3-vb.2
+   Renamed the package, library product and module to AMANFCPassportReader — clients change
+      `import NFCPassportReader` to `import AMANFCPassportReader`
+   Source directories keep their upstream names, so merges from AndyQ/NFCPassportReader stay path-clean
 2.3.3-vb.1
    Amadeus fork of upstream V2.3.3 (SPM only; CocoaPods podspec and example dropped)
    Reject malformed chip data instead of trapping

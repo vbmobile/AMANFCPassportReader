@@ -3,7 +3,7 @@ import CoreNFC
 import OpenSSL
 import OSLog
 
-@testable import NFCPassportReader
+@testable import AMANFCPassportReader
 
 public func XCTAssertNoThrow<T>(_ expression: @autoclosure () throws -> T, _ message: String = "", file: StaticString = #file, line: UInt = #line, also validateResult: (T) -> Void) {
     func executeAndAssignResult(_ expression: @autoclosure () throws -> T, to: inout T?) rethrows {

@@ -8,7 +8,7 @@
 
 import SwiftUI
 import Combine
-import NFCPassportReader
+import AMANFCPassportReader
 
 final class SettingsStore: ObservableObject {
 

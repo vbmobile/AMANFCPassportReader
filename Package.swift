@@ -4,13 +4,13 @@
 import PackageDescription
 
 let package = Package(
-    name: "NFCPassportReader",
+    name: "AMANFCPassportReader",
     platforms: [.iOS("15.0")],
     products: [
         // Products define the executables and libraries produced by a package, and make them visible to other packages.
         .library(
-            name: "NFCPassportReader",
-            targets: ["NFCPassportReader"]),
+            name: "AMANFCPassportReader",
+            targets: ["AMANFCPassportReader"]),
     ],
     dependencies: [
         // Dependencies declare other packages that this package depends on.
@@ -20,17 +20,19 @@ let package = Package(
     targets: [
         // Targets are the basic building blocks of a package. A target can define a module or a test suite.
         // Targets can depend on other targets in this package, and on products in packages which this package depends on.
+        // The source directories keep the upstream names so merges from AndyQ/NFCPassportReader stay path-clean.
         .target(
-            name: "NFCPassportReader",
+            name: "AMANFCPassportReader",
             dependencies: [
               .product(name: "OpenSSL", package: "OpenSSL-Package")
-            ]),
+            ],
+            path: "Sources/NFCPassportReader"),
         .testTarget(
-            name: "NFCPassportReaderTests",
+            name: "AMANFCPassportReaderTests",
             dependencies: [
-              "NFCPassportReader",
+              "AMANFCPassportReader",
               .product(name: "OpenSSL", package: "OpenSSL-Package")
-            ]),
+            ],
+            path: "Tests/NFCPassportReaderTests"),
     ]
 )
-

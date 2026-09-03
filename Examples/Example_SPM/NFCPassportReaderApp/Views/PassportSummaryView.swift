@@ -7,7 +7,7 @@
 //
 
 import SwiftUI
-import NFCPassportReader
+import AMANFCPassportReader
 
 struct PassportSummaryView: View {
     @EnvironmentObject var settings: SettingsStore

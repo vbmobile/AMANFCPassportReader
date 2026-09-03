@@ -7,7 +7,7 @@
 //
 
 import SwiftUI
-import NFCPassportReader
+import AMANFCPassportReader
 
 struct Item : Identifiable {
     var id = UUID()

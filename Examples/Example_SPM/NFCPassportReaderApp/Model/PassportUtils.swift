@@ -7,7 +7,7 @@
 //
 
 import UIKit
-import NFCPassportReader
+import AMANFCPassportReader
 import OSLog
 
 var lastPassportScanTime : Date = Date().addingTimeInterval(-3600)

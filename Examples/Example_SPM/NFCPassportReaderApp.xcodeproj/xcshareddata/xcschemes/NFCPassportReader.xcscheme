@@ -32,9 +32,9 @@
             skipped = "NO">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "NFCPassportReaderTests"
-               BuildableName = "NFCPassportReaderTests"
-               BlueprintName = "NFCPassportReaderTests"
+               BlueprintIdentifier = "AMANFCPassportReaderTests"
+               BuildableName = "AMANFCPassportReaderTests"
+               BlueprintName = "AMANFCPassportReaderTests"
                ReferencedContainer = "container:..">
             </BuildableReference>
          </TestableReference>

@@ -9,7 +9,7 @@ import Foundation
 import XCTest
 import OpenSSL
 
-@testable import NFCPassportReader
+@testable import AMANFCPassportReader
 
 
 final class DataGroupParsingTests: XCTestCase {

@@ -1,10 +1,11 @@
-# NFCPassportReader (Amadeus fork)
+# AMANFCPassportReader (Amadeus fork)
 
-This is the Amadeus fork of [AndyQ/NFCPassportReader](https://github.com/AndyQ/NFCPassportReader), intended for the `AMADocRFIDReadiOS` document-reader provider in place of the upstream package. It is distributed through Swift Package Manager only.
+This is the Amadeus fork of [AndyQ/NFCPassportReader](https://github.com/AndyQ/NFCPassportReader), published to clients as `AMANFCPassportReader` and intended for the `AMADocRFIDReadiOS` document-reader provider in place of the upstream package. It remains a fork of the upstream project, tracking its releases, and is distributed through Swift Package Manager only.
 
 What differs from upstream:
 
 * Chip data is bounds-checked where upstream trusted it: the ASN.1 length decoder (`asn1Length`), the data-group dispatcher (`DataGroupParser.parseDG`), the shared TLV walker (`DataGroup`) and DG1's MRZ parsing reject a length form shorter than it announces, a truncated element, or an MRZ too short for its document type with an error instead of trapping. `asn1Length` is public, so callers that previously crashed on a 0-, 1- or 2-byte input now receive `CannotDecodeASN1Length`. The other data-group parsers are unchanged from upstream.
+* The package, library product and module are renamed to `AMANFCPassportReader`, so client code writes `import AMANFCPassportReader`. The source directories keep their upstream names, so merges from upstream stay path-clean.
 * Versions follow `<upstream>-vb.<n>` (for example `2.3.3-vb.1`), where `<n>` counts fork revisions on top of the given upstream release.
 
 Branching and pulling upstream:

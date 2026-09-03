@@ -7,7 +7,7 @@
 //
 
 import SwiftUI
-import NFCPassportReader
+import AMANFCPassportReader
 
 struct MultipleSelectionRow: View {
     var title: String
