@@ -164,3 +164,7 @@ The EPassport section on YobiWiki (http://wiki.yobi.be/wiki/EPassport)  This has
 
 Marcin Krzyżanowski for his OpenSSL-Universal repo.
 
+
+## License
+
+MIT, unchanged from upstream: see [LICENSE](LICENSE), Copyright (c) 2019 Andy Qua. This fork keeps that licence and the original copyright notices in every source file it carries.
