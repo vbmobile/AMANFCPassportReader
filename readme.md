@@ -169,3 +169,9 @@ Marcin Krzyżanowski for his OpenSSL-Universal repo.
 ## License
 
 MIT, unchanged from upstream: see [LICENSE](LICENSE), Copyright (c) 2019 Andy Qua. This fork keeps that licence and the original copyright notices in every source file it carries.
+
+## Continuous integration
+
+GitLab runs the existing parser and cryptography XCTest suites on an iOS simulator for branches, tags, and merge requests. Run the same check locally with `bash scripts/test-ios.sh`; Xcode must have an available iOS simulator. Set `NFC_TEST_DESTINATION` to select a specific simulator. Results and the build log are saved in `reports/`; remove the previous result bundle or set `NFC_TEST_RESULTS` to a new path before repeating a local run.
+
+These tests do not perform physical NFC reads. Passport/chip, BAC/PACE, and hardware session validation still require an NFC-capable iPhone and test documents.
