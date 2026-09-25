@@ -80,6 +80,9 @@ public class PACEHandler {
         Logger.pace.info( "Performing PACE with \(self.paceInfo.getProtocolOIDString())" )
         
         paceOID = paceInfo.getObjectIdentifier()
+        let parameterId = paceInfo.getParameterId()
+        let mappingName = (try? paceInfo.getMappingType())?.abbreviation ?? "unknown"
+        Logger.pace.info( "PACE parameters - OID \(self.paceOID) (\(self.paceInfo.getProtocolOIDString())), mapping \(mappingName), domain parameter ID \(parameterId.map { String($0) } ?? "none") (\(PACEInfo.domainParameterName(parameterId)))" )
         parameterSpec = try paceInfo.getParameterSpec()
         
         mappingType = try paceInfo.getMappingType()  // Either GM, CAM, or IM.
@@ -87,6 +90,7 @@ public class PACEHandler {
         cipherAlg  = try paceInfo.getCipherAlgorithm()  // Either DESede or AES.
         digestAlg = try paceInfo.getDigestAlgorithm()  // Either SHA-1 or SHA-256.
         keyLength = try paceInfo.getKeyLength()  // Get key length  the enc cipher. Either 128, 192, or 256.
+        Logger.pace.info( "PACE algorithms - key agreement \(self.agreementAlg), cipher \(self.cipherAlg)-\(self.keyLength), digest \(self.digestAlg)" )
 
         paceKeyType = PACEHandler.MRZ_PACE_KEY_REFERENCE
         paceKey = try createPaceKey( from: mrzKey )
