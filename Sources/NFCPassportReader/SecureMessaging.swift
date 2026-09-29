@@ -39,6 +39,13 @@ public class SecureMessaging {
         self.padLength = algoName == .DES ? 8 : 16
     }
 
+    /// The cipher's block size, which protected data is padded to.
+    var blockSize : Int { padLength }
+
+    /// The largest response length whose protected response still fits a short APDU (256 bytes):
+    /// the cipher text padded with at least one byte, DO'87' and DO'99' headers and the 8-byte MAC.
+    var maxShortResponseLength : Int { padLength == 16 ? 223 : 231 }
+
     /// Protect the apdu following the doc9303 specification
     func protect(apdu : NFCISO7816APDU, useExtendedMode: Bool = false ) throws -> NFCISO7816APDU {
     
@@ -88,7 +95,8 @@ public class SecureMessaging {
         // otherwise its a single byte of size
         let size = do87.count + do97.count + do8e.count
         var dataSize: [UInt8]
-        if size > 255 || (useExtendedMode && apdu.expectedResponseLength > 231) {
+        let extendedLength = size > 255 || (useExtendedMode && apdu.expectedResponseLength > maxShortResponseLength)
+        if extendedLength {
             dataSize = [0x00] + intToBin(size, pad: 4)
         } else {
             dataSize = intToBin(size)
@@ -98,7 +106,7 @@ public class SecureMessaging {
             
         // If the data is more that 255, specify the we are using extended length (0x00, 0x00)
         // Thanks to @filom for the fix!
-        if size > 255 || (useExtendedMode && apdu.expectedResponseLength > 231) {
+        if extendedLength {
             protectedAPDU += [0x00,0x00]
         } else {
             protectedAPDU += [0x00]
@@ -286,7 +294,10 @@ public class SecureMessaging {
 
     func buildD097(apdu : NFCISO7816APDU) throws -> [UInt8] {
         let le = apdu.expectedResponseLength
-        var binLe = intToBin(le)
+        // One byte up to 256 ('00'), two above it ('0000' for 65536). intToBin cannot be used
+        // here: it drops the leading zero of an odd number of hex digits, so 991 (3DF) came out
+        // as 3D 0F.
+        var binLe : [UInt8] = le > 256 ? [UInt8((le >> 8) & 0xFF), UInt8(le & 0xFF)] : [UInt8(le & 0xFF)]
         if (le == 256 || le == 65536) {
             binLe = [0x00] + (le > 256 ? [0x00] : [])
         }

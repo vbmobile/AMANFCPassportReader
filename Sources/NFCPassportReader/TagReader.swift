@@ -12,26 +12,105 @@ import OSLog
 #if !os(macOS)
 import CoreNFC
 
+/// The APDU exchange with the chip, so the reading logic can also run against a simulated chip.
+protocol APDUTransport {
+    var historicalBytes: Data? { get }
+    func sendCommand(apdu: NFCISO7816APDU) async throws -> (Data, UInt8, UInt8)
+}
+
+@available(iOS 15, *)
+struct ISO7816TagTransport: APDUTransport {
+    let tag: NFCISO7816Tag
+
+    var historicalBytes: Data? { tag.historicalBytes }
+
+    func sendCommand(apdu: NFCISO7816APDU) async throws -> (Data, UInt8, UInt8) {
+        try await tag.sendCommand(apdu: apdu)
+    }
+}
+
+/// How one file read went: what the session milestones report, and what a failed
+/// session reports about the read it was in.
+struct FileReadProgress {
+    let fileId: [UInt8]
+    var length: Int?
+    var bytesRead = 0
+    var apdus = 0
+    var chunkLength = 0
+    var extendedLength = false
+
+    var chunkDescription: String {
+        "\(chunkLength)-byte \(extendedLength ? "extended-length " : "")chunks"
+    }
+}
+
 @available(iOS 15, *)
 public class TagReader {
-    var tag : NFCISO7816Tag
+    /// Plaintext bytes per READ BINARY when the chip states no buffer sizes. 223 is the largest
+    /// amount whose secure messaging response still fits a short APDU (256 bytes) under AES:
+    /// 224 bytes of padded cipher text, the DO'87' and DO'99' headers and the 8-byte MAC.
+    static let shortReadLength = 0xDF
+    /// The length reads step down to when a chip refuses 223 bytes.
+    static let fallbackReadLength = 0xA0
+    /// Extended-length responses are kept to this size whatever larger buffer the chip states:
+    /// responses of about 1.7 KB have been lost between iPhones and chips, and 1 KB already cuts
+    /// the round trips of a large DG2 by more than four.
+    static let maxExtendedResponseLength = 1024
+
+    var tag : APDUTransport
     var secureMessaging : SecureMessaging?
-    var maxDataLengthToRead : Int = 0xA0  // Should be able to use 256 to read arbitrary amounts of data at full speed BUT this isn't supported across all passports so for reliability just use the smaller amount.
+    var maxDataLengthToRead : Int = TagReader.shortReadLength
+
+    /// The response APDU size reads may use with extended length, set only when the chip states
+    /// its buffer sizes (ICAO 9303-10 forbids extended READ BINARY otherwise).
+    private(set) var extendedResponseLimit : Int?
+    private var dataAmountOverridden = false
+
+    /// Every APDU exchanged with the chip, GET RESPONSE included.
+    private(set) var apduCount = 0
+    /// The file being read, while it is read.
+    private(set) var currentRead : FileReadProgress?
+    /// The last file read in full.
+    private(set) var lastRead : FileReadProgress?
 
     var progress : ((Int)->())?
 
     init( tag: NFCISO7816Tag ) {
-        self.tag = tag
+        self.tag = ISO7816TagTransport(tag: tag)
     }
-    
+
+    init( transport: APDUTransport ) {
+        self.tag = transport
+    }
+
     func overrideDataAmountToRead( newAmount : Int ) {
         maxDataLengthToRead = newAmount
+        dataAmountOverridden = true
+        extendedResponseLimit = nil
     }
-    
+
     func reduceDataReadingAmount() {
-        if maxDataLengthToRead > 0xA0 {
-            maxDataLengthToRead = 0xA0
+        extendedResponseLimit = nil
+        if maxDataLengthToRead > TagReader.fallbackReadLength {
+            maxDataLengthToRead = TagReader.fallbackReadLength
         }
+    }
+
+    /// Lets reads use extended length up to the response size the chip states, capped at
+    /// `maxExtendedResponseLength`. Returns whether reads will use it.
+    @discardableResult
+    func enableExtendedLengthReads( info: ExtendedLengthInfo ) -> Bool {
+        guard !dataAmountOverridden, let limit = info.usableResponseLimit else { return false }
+        extendedResponseLimit = min(limit, TagReader.maxExtendedResponseLength)
+        return true
+    }
+
+    /// Plaintext bytes that fit a secure messaging response of `responseLimit` bytes (status
+    /// word included): the cipher text, padded to the block size with at least one byte, plus
+    /// DO'87' (tag, up to three length bytes, padding indicator), DO'99' (4) and DO'8E' (10).
+    static func readLength( responseLimit: Int, blockSize: Int ) -> Int {
+        let cipherText = (responseLimit - 2 - 10 - 4 - 5) / blockSize * blockSize
+        return cipherText - 1
     }
 
 
@@ -166,28 +245,50 @@ public class TagReader {
     
 
     func selectFileAndRead( tag: [UInt8]) async throws -> [UInt8] {
+        let apdusBefore = apduCount
+        currentRead = FileReadProgress(fileId: tag)
+        func track(_ update: (inout FileReadProgress) -> Void) {
+            guard var read = currentRead else { return }
+            update(&read)
+            read.apdus = apduCount - apdusBefore
+            currentRead = read
+        }
+
         var resp = try await selectFile(tag: tag )
-            
+        track { _ in }
+
         // Read first 4 bytes of header to see how big the data structure is
         guard let readHeaderCmd = NFCISO7816APDU(data:Data([0x00, 0xB0, 0x00, 0x00, 0x00, 0x00,0x04])) else {
             throw NFCPassportReaderError.UnexpectedError
         }
         resp = try await self.send( cmd: readHeaderCmd )
+        track { _ in }
+        guard resp.data.count >= 2 else {
+            throw NFCPassportReaderError.CannotDecodeASN1Length
+        }
 
         // Header looks like:  <tag><length of data><nextTag> e.g.60145F01 -
         // the total length is the 2nd value plus the two header 2 bytes
         // We've read 4 bytes so we now need to read the remaining bytes from offset 4
-        let (len, o) = try! asn1Length([UInt8](resp.data[1..<4]))
+        let (len, o) = try asn1Length([UInt8](resp.data[1...]))
         var remaining = Int(len)
         var amountRead = o + 1
-        
+        guard resp.data.count >= amountRead else {
+            throw NFCPassportReaderError.CannotDecodeASN1Length
+        }
+
         var data = [UInt8](resp.data[..<amountRead])
-        
+        track {
+            $0.length = amountRead + remaining
+            $0.bytesRead = amountRead
+        }
+
         Logger.tagReader.debug( "TagReader - Number of data bytes to read - \(remaining)" )
-        
-        var readAmount : Int = maxDataLengthToRead
+
         while remaining > 0 {
-            if maxDataLengthToRead != 256 && remaining < maxDataLengthToRead {
+            let (chunkLength, extended) = currentChunkLength()
+            var readAmount = chunkLength
+            if chunkLength != 256 && remaining < chunkLength {
                 readAmount = remaining
             }
 
@@ -203,17 +304,94 @@ public class TagReader {
                 data: Data(),
                 expectedResponseLength: readAmount
             )
-            resp = try await self.send( cmd: cmd )
+            track {
+                $0.chunkLength = chunkLength
+                $0.extendedLength = extended
+            }
+            do {
+                resp = try await self.send( cmd: cmd, useExtendedMode: extended )
+            } catch let error as NFCPassportReaderError {
+                track { _ in }
+                guard stepDownReadLength(after: error, offset: amountRead) else { throw error }
+                continue
+            }
 
             Logger.tagReader.debug( "TagReader - got resp - \(binToHexRep(resp.data, asArray: true)), sw1 : \(resp.sw1), sw2 : \(resp.sw2)" )
+            guard !resp.data.isEmpty else {
+                // Asking again for the same bytes would only repeat this until the session ends.
+                Logger.tagReader.error( "TagReader - the chip returned no data at offset \(amountRead) with \(remaining) bytes left" )
+                throw NFCPassportReaderError.ResponseError( "No data returned", resp.sw1, resp.sw2 )
+            }
             data += resp.data
-            
+
             remaining -= resp.data.count
             amountRead += resp.data.count
+            track { $0.bytesRead = amountRead }
             Logger.tagReader.debug( "TagReader - Amount of data left to read - \(remaining)" )
         }
-        
+
+        lastRead = currentRead
+        currentRead = nil
         return data
+    }
+
+    /// Reads EF.ATR/INFO (2F01 in the master file), which states the chip's extended-length
+    /// buffer sizes. Nil when the chip has no such file or does not let it be read. Runs in
+    /// plain mode with the master file selected, so right after EF.CardAccess.
+    func readATRInfo() async throws -> [UInt8]? {
+        guard secureMessaging == nil else { return nil }
+        do {
+            _ = try await selectFile(tag: [0x2F, 0x01])
+        } catch let error as NFCPassportReaderError {
+            Logger.tagReader.debug( "TagReader - EF.ATR/INFO not selected - \(error)" )
+            return nil
+        }
+
+        // The file is a list of data objects rather than one, so no header gives its length:
+        // ask for up to 256 bytes and take the end-of-file warning as the end of the file.
+        var expected = 256
+        for _ in 0 ..< 2 {
+            let cmd = NFCISO7816APDU(instructionClass: 0x00, instructionCode: 0xB0, p1Parameter: 0x00, p2Parameter: 0x00, data: Data(), expectedResponseLength: expected)
+            apduCount += 1
+            let (data, sw1, sw2) = try await tag.sendCommand(apdu: cmd)
+            if (sw1 == 0x90 && sw2 == 0x00) || (sw1 == 0x62 && sw2 == 0x82) {
+                return data.isEmpty ? nil : [UInt8](data)
+            }
+            guard sw1 == 0x6C, sw2 > 0 else { return nil }
+            expected = Int(sw2)
+        }
+        return nil
+    }
+
+    /// The length the next READ BINARY asks for, and whether it needs extended length.
+    func currentChunkLength() -> (Int, Bool) {
+        if let limit = extendedResponseLimit, let sm = secureMessaging {
+            let length = TagReader.readLength(responseLimit: limit, blockSize: sm.blockSize)
+            if length > sm.maxShortResponseLength {
+                return (length, true)
+            }
+        }
+        return (maxDataLengthToRead, false)
+    }
+
+    /// After a chip refuses a read length (6700 or 6Cxx) the same offset is read again with the
+    /// next smaller length: extended, then 223, then 160 bytes. False when nothing smaller is left.
+    func stepDownReadLength( after error: NFCPassportReaderError, offset: Int ) -> Bool {
+        guard case let .ResponseError(_, sw1, sw2) = error, (sw1 == 0x67 && sw2 == 0x00) || sw1 == 0x6C else {
+            return false
+        }
+        let refused = currentChunkLength().0
+        let status = String(format: "%02X%02X", sw1, sw2)
+        if extendedResponseLimit != nil {
+            extendedResponseLimit = nil
+        } else if maxDataLengthToRead > TagReader.fallbackReadLength {
+            maxDataLengthToRead = TagReader.fallbackReadLength
+        } else {
+            return false
+        }
+        let next = currentChunkLength().0
+        Logger.tagReader.info( "Chip refused a \(refused)-byte read at offset \(offset) (\(status)) - reading on in \(next)-byte chunks" )
+        return true
     }
 
 
@@ -262,6 +440,7 @@ public class TagReader {
             Logger.tagReader.debug("TagReader - [SM] \(toSend)" )
         }
         
+        apduCount += 1
         var (data, sw1, sw2) = try await tag.sendCommand(apdu: toSend)
         Logger.tagReader.debug( "TagReader - Received response, size \(data.count)b" )
 
@@ -270,6 +449,7 @@ public class TagReader {
             let getResponseCmd = NFCISO7816APDU(instructionClass: 0x0, instructionCode: 0xC0, p1Parameter: 0x0, p2Parameter: 0x0, data: Data(), expectedResponseLength: Int(sw2))
             let nextSegment: Data
             // Overwrite sw1 and sw2.
+            apduCount += 1
             (nextSegment, sw1, sw2) = try await tag.sendCommand(apdu: getResponseCmd)
             Logger.tagReader.debug("Read remaining data. Accumulated: \(data.count + nextSegment.count)b. Last batch \(nextSegment.count)b. Still remaining: \(sw2)b")
             data += nextSegment
@@ -285,15 +465,21 @@ public class TagReader {
             
         }
         
-        if rep.sw1 != 0x90 && rep.sw2 != 0x00 {
-            Logger.tagReader.error( "Error reading tag: sw1 - 0x\(binToHexRep(sw1)), sw2 - 0x\(binToHexRep(sw2))" )
+        // A READ BINARY answered with anything but 9000 carries no file data. The upstream check
+        // lets every status ending in 00 through (6700 wrong length, 6B00 offset beyond the file),
+        // and the read loop then asks for the same bytes until the session ends. Other commands
+        // keep that check until they are verified against chips with the stricter one.
+        let isReadBinary = cmd.instructionCode == 0xB0
+        let failed = isReadBinary ? !(rep.sw1 == 0x90 && rep.sw2 == 0x00) : (rep.sw1 != 0x90 && rep.sw2 != 0x00)
+        if failed {
+            Logger.tagReader.error( "Error reading tag: sw1 - 0x\(binToHexRep(rep.sw1)), sw2 - 0x\(binToHexRep(rep.sw2))" )
             let tagError: NFCPassportReaderError
             if (rep.sw1 == 0x63 && rep.sw2 == 0x00) {
                 tagError = NFCPassportReaderError.InvalidMRZKey
             } else {
                 let errorMsg = self.decodeError(sw1: rep.sw1, sw2: rep.sw2)
                 Logger.tagReader.error( "reason: \(errorMsg)" )
-                tagError = NFCPassportReaderError.ResponseError( errorMsg, sw1, sw2 )
+                tagError = NFCPassportReaderError.ResponseError( errorMsg, rep.sw1, rep.sw2 )
             }
             throw tagError
         }
