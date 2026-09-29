@@ -85,9 +85,8 @@ fastlane/test_output
 # https://github.com/johnno1962/injectionforxcode
 
 iOSInjectionProject/
-/.DS_Store
+.DS_Store
 /Package.resolved
-/Sources/.DS_Store
 
 # Workspace configuration
 Examples/Example_SPM/NFCPassportReaderApp.xcodeproj/project.xcworkspace/xcshareddata/IDEWorkspaceChecks.plist
