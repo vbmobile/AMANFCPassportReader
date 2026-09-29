@@ -72,7 +72,6 @@
 		A18248C12369D17300581384 /* DetailsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DetailsView.swift; sourceTree = "<group>"; };
 		A182DE6025DD6F1300341204 /* StoredPassportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StoredPassportView.swift; sourceTree = "<group>"; };
 		A182DE6225DD730D00341204 /* FileManagerExt.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileManagerExt.swift; sourceTree = "<group>"; };
-		A182DE6725DD7EA600341204 /* MRZScannerViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MRZScannerViewController.swift; sourceTree = "<group>"; };
 		A1A13B9425B8A29E0026074C /* UIApplicationExt.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UIApplicationExt.swift; sourceTree = "<group>"; };
 		A1A4C0F625B5E4D70070908B /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = System/Library/Frameworks/Foundation.framework; sourceTree = SDKROOT; };
 		A1AE9E142686235E00D0E764 /* AMANFCPassportReader */ = {isa = PBXFileReference; lastKnownFileType = folder; name = AMANFCPassportReader; path = ../..; sourceTree = "<group>"; };
@@ -207,7 +206,6 @@
 				A18248C12369D17300581384 /* DetailsView.swift */,
 				A182DE6025DD6F1300341204 /* StoredPassportView.swift */,
 				A1614B9125D5856600191749 /* ExportPassportView.swift */,
-				A182DE6725DD7EA600341204 /* MRZScannerViewController.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
