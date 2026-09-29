@@ -69,6 +69,8 @@ public class PassportReader : NSObject {
     private var masterListURL : URL?
     private var shouldNotReportNextReaderSessionInvalidationErrorUserCanceled : Bool = false
     private var sessionStartedAt : Date?
+    private var tagConnectedAt : Date?
+    private var tagReader : TagReader?
 
     // By default, Passive Authentication uses the new RFS5652 method to verify the SOD, but can be switched to use
     // the previous OpenSSL CMS verification if necessary
@@ -126,6 +128,8 @@ public class PassportReader : NSObject {
         
         let startedAt = Date()
         self.sessionStartedAt = startedAt
+        self.tagConnectedAt = nil
+        self.tagReader = nil
         let requested = self.readAllDatagroups ? "every data group COM declares" : self.dataGroupsToRead.map { $0.getName() }.joined(separator: ", ")
         Logger.session.info( "Chip session started at \(Self.timestamp(startedAt)) - reading \(requested)" )
 
@@ -155,6 +159,11 @@ extension PassportReader : NFCTagReaderSessionDelegate {
         // If necessary, you may handle the error. Note session is no longer valid.
         // You must create a new session to restart RF polling.
         Logger.passportReader.debug( "tagReaderSession:didInvalidateWithError - \(error.localizedDescription)" )
+        // The reason the system gives, which a read that already failed on a dead session
+        // (NFCError 103) would otherwise never show.
+        if let readerError = error as? NFCReaderError {
+            Logger.session.info( "\(self.sessionClock()) Reader session invalidated - NFCReaderError code \(readerError.errorCode)\(self.sinceTagConnected())" )
+        }
         self.readerSession?.invalidate()
         self.readerSession = nil
 
@@ -217,10 +226,12 @@ extension PassportReader : NFCTagReaderSessionDelegate {
                 try await session.connect(to: tag)
                 
                 Logger.passportReader.debug( "tagReaderSession:connected to tag - starting authentication" )
+                self.tagConnectedAt = Date()
                 Logger.session.info( "\(self.sessionClock()) Tag connected" )
                 self.updateReaderSessionMessage( alertMessage: NFCViewDisplayMessage.authenticatingWithPassport(0) )
                 
                 let tagReader = TagReader(tag:passportTag)
+                self.tagReader = tagReader
                 
                 if let newAmount = self.dataAmountToReadOverride {
                     tagReader.overrideDataAmountToRead(newAmount: newAmount)
@@ -288,6 +299,8 @@ extension PassportReader {
                 passport.cardAccess = cardAccess
 
                 trackingDelegate?.readCardAccess(cardAccess: cardAccess)
+
+                await detectExtendedLength(tagReader: tagReader)
 
                 Logger.passportReader.info( "Starting Password Authenticated Connection Establishment (PACE)" )
                  
@@ -434,14 +447,7 @@ extension PassportReader {
             }
         }
 
-        // If we are skipping secure elements then remove .DG3 and .DG4
-        if self.skipSecureElements {
-            DGsToRead = DGsToRead.filter { $0 != .DG3 && $0 != .DG4 }
-        }
-
-        if self.readAllDatagroups != true {
-            DGsToRead = DGsToRead.filter { dataGroupsToRead.contains($0) }
-        }
+        DGsToRead = Self.readOrder( declared: DGsToRead, requested: self.readAllDatagroups ? nil : dataGroupsToRead, skipSecureElements: self.skipSecureElements )
         for dgId in DGsToRead {
             self.updateReaderSessionMessage( alertMessage: NFCViewDisplayMessage.readingDataGroupProgress(dgId, 0) )
             if let dg = try await readDataGroup(tagReader:tagReader, dgId:dgId) {
@@ -463,7 +469,8 @@ extension PassportReader {
             let attemptStartedAt = Date()
             do {
                 let response = try await tagReader.readDataGroup(dataGroup:dgId)
-                Logger.session.info( "\(self.sessionClock()) \(dgId.getName()) read - \(response.count) bytes in \(Self.milliseconds(since: attemptStartedAt)) ms (attempt \(readAttempts + 1))" )
+                let transfer = tagReader.lastRead.map { ", \($0.apdus) APDUs" + ($0.chunkLength > 0 ? ", \($0.chunkDescription)" : "") } ?? ""
+                Logger.session.info( "\(self.sessionClock()) \(dgId.getName()) read - \(response.count) bytes in \(Self.milliseconds(since: attemptStartedAt)) ms\(transfer) (attempt \(readAttempts + 1))" )
                 let dg = try DataGroupParser().parseDG(data: response)
                 return dg
             } catch let error as NFCPassportReaderError {
@@ -557,7 +564,67 @@ extension PassportReader {
 
     func logSessionEnd(_ reason: String) {
         let endedAt = Date()
-        Logger.session.info( "\(self.sessionClock()) Chip session ended at \(Self.timestamp(endedAt)) - \(reason)" )
+        var detail = sinceTagConnected()
+        if let read = tagReader?.currentRead {
+            detail += " - reading \(currentlyReadingDataGroup?.getName() ?? binToHexRep(read.fileId)): \(read.bytesRead) of \(read.length.map(String.init) ?? "?") bytes after \(read.apdus) APDUs"
+            if read.chunkLength > 0 {
+                detail += ", \(read.chunkDescription)"
+            }
+        }
+        if let tagReader {
+            detail += " - \(tagReader.apduCount) APDUs in the session"
+        }
+        Logger.session.info( "\(self.sessionClock()) Chip session ended at \(Self.timestamp(endedAt)) - \(reason)\(detail)" )
+    }
+
+    /// Time since the tag connected, which the system limits separately from the session.
+    func sinceTagConnected() -> String {
+        guard let tagConnectedAt else { return "" }
+        return String(format: " (%.3fs after the tag connected)", Date().timeIntervalSince(tagConnectedAt))
+    }
+
+    /// Reads what the chip states about extended-length APDUs and lets data group reads use it
+    /// when it states its buffer sizes. Never fails the session: a chip that says nothing is read
+    /// in short APDUs as before.
+    func detectExtendedLength( tagReader: TagReader ) async {
+        var info = ExtendedLengthInfo()
+        var historicalBytes = "none"
+        if let bytes = tagReader.tag.historicalBytes, !bytes.isEmpty {
+            historicalBytes = bytes.map { String(format: "%02X", $0) }.joined(separator: " ")
+            info.indicatedByHistoricalBytes = ExtendedLengthInfo.extendedLengthBit(historicalBytes: [UInt8](bytes))
+        }
+        var atrInfo = "not present"
+        do {
+            if let bytes = try await tagReader.readATRInfo() {
+                atrInfo = "\(bytes.count) bytes"
+                let parsed = ExtendedLengthInfo.parse(atrInfo: bytes)
+                info.indicatedByATRInfo = parsed.indicatedByATRInfo
+                info.maxCommandLength = parsed.maxCommandLength
+                info.maxResponseLength = parsed.maxResponseLength
+            }
+        } catch {
+            atrInfo = "not read - \(error)"
+        }
+        let reads = tagReader.enableExtendedLengthReads(info: info)
+            ? "data groups read with extended length, responses up to \(tagReader.extendedResponseLimit ?? 0) bytes"
+            : "data groups read in \(tagReader.maxDataLengthToRead)-byte chunks"
+        Logger.session.info( "\(self.sessionClock()) Extended length - historical bytes \(historicalBytes), EF.ATR/INFO \(atrInfo); \(info.summary) - \(reads)" )
+    }
+
+    /// The order data groups are read in after COM and Chip Authentication. A read asking for
+    /// specific groups gets them in the order it asked, restricted to what COM declares plus SOD,
+    /// so the caller decides what is in hand first. A read of everything takes SOD and then COM's order.
+    static func readOrder( declared: [DataGroupId], requested: [DataGroupId]?, skipSecureElements: Bool ) -> [DataGroupId] {
+        var available = declared
+        if skipSecureElements {
+            available = available.filter { $0 != .DG3 && $0 != .DG4 }
+        }
+        guard let requested else { return available }
+        var order: [DataGroupId] = []
+        for dgId in requested where available.contains(dgId) && !order.contains(dgId) {
+            order.append(dgId)
+        }
+        return order
     }
 
     internal func addDatagroupsToRead(com: COM, to DGsToRead: inout [DataGroupId]) {
