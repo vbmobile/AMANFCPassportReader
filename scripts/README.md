@@ -5,7 +5,7 @@ This script will create a file containing a set of unique CSCA (Country Signing 
 
 These are used to verify both Document Signing certificates and Security Object DS Signatures (SOD) contained in e-passports and other electronic identity cards.
 
-It can accept either the ICOA PDK master list file in LDIF format (which is a collection of master lists from validated countries), or a single Country masterlist file in Cryptographic Message Syntax (CMS) format.
+It can accept either the ICAO PKD master list file in LDIF format (which is a collection of master lists from validated countries), or a single Country masterlist file in Cryptographic Message Syntax (CMS) format.
 
 # Where can I get a master list from?
 ICAO makes their master lists available "freely available online to any person or State who wishes to download it. However, the process of downloading is manual and cannot be automated" (https://www.icao.int/Security/FAL/PKD/BVRT/Pages/Access.aspx) 
@@ -14,7 +14,7 @@ The master lists can be downloaded from: https://download.pkd.icao.int (previous
 
 These are in LDIF (LDAP Data Interchange Format) format
 
-Additionally, some countries make their master lists available (e.g. Germany, France and Italy are ones I've found). Do a search for <country> masterlist or the JMRTD project has a list (some links no longer work though) - https://jmrtd.org/certificates.shtml Yobi Wifi
+Additionally, some countries make their master lists available (e.g. Germany, France and Italy are ones I've found). Do a search for <country> masterlist or the JMRTD project has a list (some links no longer work though) - https://jmrtd.org/certificates.shtml
 
 These files will usually be zipped, so extract these files and you should end up with a <file>.ml.
  
@@ -39,7 +39,7 @@ python extract.py [Country master list.ml|ICAO LDIF file]
 
 It will run through the masterlist(s) contained within the file and you should end up with a new masterList.pem file which is a concatenation of all the unique certificates.
 
-This can then be imported into the NFCPassportReader app and used to verify an e-passport using Passive Authentication.
+This can then be imported into the example app and used to verify an e-passport using Passive Authentication.
 
 ## Credits
 This script is pretty much based on the details from http://wiki.yobi.be/wiki/EPassport with some additional bits for de-duplicating certificates. 
