@@ -87,8 +87,7 @@ struct ExtendedLengthInfo: Equatable {
     }
 }
 
-// MARK: - Private
-private extension ExtendedLengthInfo {
+extension ExtendedLengthInfo {
     static func describe(_ bit: Bool?) -> String {
         switch bit {
         case .some(true): return "extended length"
@@ -96,7 +95,10 @@ private extension ExtendedLengthInfo {
         case .none: return "not stated"
         }
     }
+}
 
+// MARK: - Private
+private extension ExtendedLengthInfo {
     /// The third software function byte, b7: extended Lc and Le fields.
     static func capabilitiesBit(_ capabilities: [UInt8]) -> Bool? {
         guard capabilities.count >= 3 else { return nil }
@@ -127,7 +129,8 @@ private extension ExtendedLengthInfo {
                     if next & 0x80 == 0 { break }
                 }
             }
-            guard index < bytes.count, case let (length, lengthSize)? = Self.length(at: index, in: bytes) else { break }
+            guard index < bytes.count,
+                  case let (length, lengthSize)? = Self.length(at: index, in: bytes) else { break }
             index += lengthSize
             guard index + length <= bytes.count else { break }
             objects.append((tag, [UInt8](bytes[index ..< index + length])))
