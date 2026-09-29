@@ -132,8 +132,11 @@ public class SecureMessaging {
         Logger.secureMessaging.debug("\tIncrement SSC with 1")
         Logger.secureMessaging.debug("\t\tSSC: \(binToHexRep(self.ssc))")
                 
-        // Check for a SM error
-        if(rapdu.sw1 != 0x90 || rapdu.sw2 != 0x00) {
+        // Check for a SM error. A warning (62xx) still carries protected data, such as a READ
+        // BINARY that ran into the end of the file (6282).
+        let carriesDataObjects = rapdu.data.first == 0x87 || rapdu.data.first == 0x99
+        let isProtectedWarning = rapdu.sw1 == 0x62 && carriesDataObjects
+        if (rapdu.sw1 != 0x90 || rapdu.sw2 != 0x00) && !isProtectedWarning {
             return rapdu
         }
 

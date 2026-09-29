@@ -38,6 +38,8 @@ struct FileReadProgress {
     var apdus = 0
     var chunkLength = 0
     var extendedLength = false
+    /// Time spent waiting for the chip's answers; the rest of a read is spent on the phone.
+    var chipTime: TimeInterval = 0
 
     var chunkDescription: String {
         "\(chunkLength)-byte \(extendedLength ? "extended-length " : "")chunks"
@@ -66,12 +68,25 @@ public class TagReader {
     private(set) var extendedResponseLimit : Int?
     private var dataAmountOverridden = false
 
-    /// Every APDU exchanged with the chip, GET RESPONSE included.
-    private(set) var apduCount = 0
-    /// The file being read, while it is read.
-    private(set) var currentRead : FileReadProgress?
-    /// The last file read in full.
-    private(set) var lastRead : FileReadProgress?
+    /// Whether a data group's first READ BINARY addresses it by short file identifier instead of
+    /// following a SELECT. Off for the rest of the session once the chip refuses it.
+    var readsByShortFileIdentifier = true
+    /// Whether a data group's first READ BINARY asks for a whole chunk instead of the 4-byte
+    /// header. Off for the rest of the session once the chip refuses it.
+    var readsWholeFirstChunk = true
+
+    /// Whether the last status word the chip sent kept secure messaging in step: it did when
+    /// there was no secure messaging or when the response carried its own data objects. ICAO
+    /// 9303-11 has the chip abort secure messaging when it answers in plain.
+    private(set) var lastResponseKeptSecureMessaging = true
+
+    // Written by the read task and read by the reader session's delegate queue when the
+    // session ends, hence the lock.
+    private let stateLock = NSLock()
+    private var storedAPDUCount = 0
+    private var storedChipTime : TimeInterval = 0
+    private var storedCurrentRead : FileReadProgress?
+    private var storedLastRead : FileReadProgress?
 
     var progress : ((Int)->())?
 
@@ -113,13 +128,46 @@ public class TagReader {
         return cipherText - 1
     }
 
+    /// Every APDU exchanged with the chip, GET RESPONSE included.
+    private(set) var apduCount : Int {
+        get { withStateLock { storedAPDUCount } }
+        set { withStateLock { storedAPDUCount = newValue } }
+    }
+
+    /// Time spent waiting for the chip's answers over the session.
+    private(set) var chipTime : TimeInterval {
+        get { withStateLock { storedChipTime } }
+        set { withStateLock { storedChipTime = newValue } }
+    }
+
+    /// The file being read, while it is read.
+    private(set) var currentRead : FileReadProgress? {
+        get { withStateLock { storedCurrentRead } }
+        set { withStateLock { storedCurrentRead = newValue } }
+    }
+
+    /// The last file read in full.
+    private(set) var lastRead : FileReadProgress? {
+        get { withStateLock { storedLastRead } }
+        set { withStateLock { storedLastRead = newValue } }
+    }
+
+    /// The read in progress and the session's APDU count, taken together.
+    func sessionSnapshot() -> (currentRead: FileReadProgress?, apduCount: Int) {
+        withStateLock { (storedCurrentRead, storedAPDUCount) }
+    }
 
     func readDataGroup( dataGroup: DataGroupId ) async throws -> [UInt8]  {
         guard let tag = dataGroup.getFileIDTag() else {
             throw NFCPassportReaderError.UnsupportedDataGroup
         }
-        
-        return try await selectFileAndRead(tag: tag )
+
+        // Every LDS1 elementary file's short identifier is the low byte of its file identifier.
+        return try await readFile(
+            tag: tag,
+            shortFileIdentifier: tag[1] & 0x1F,
+            firstChunkWhole: true
+        )
     }
     
     func getChallenge() async throws -> ResponseAPDU{
@@ -244,48 +292,68 @@ public class TagReader {
     }
     
 
+    /// Reads a file the upstream way: SELECT, the 4-byte header, then the rest. EF.CardAccess is
+    /// read like this, in plain mode before access control.
     func selectFileAndRead( tag: [UInt8]) async throws -> [UInt8] {
+        try await readFile(tag: tag, shortFileIdentifier: nil, firstChunkWhole: false)
+    }
+
+    /// Reads a transparent file. Given a short file identifier, the first READ BINARY selects the
+    /// file itself and asks for a whole chunk instead of the 4-byte header, so a small file takes
+    /// one APDU instead of three and a large one two fewer. The upstream SELECT and header read
+    /// stay as fallbacks for chips that refuse either.
+    func readFile(
+        tag: [UInt8],
+        shortFileIdentifier: UInt8?,
+        firstChunkWhole: Bool
+    ) async throws -> [UInt8] {
         let apdusBefore = apduCount
+        let chipTimeBefore = chipTime
         currentRead = FileReadProgress(fileId: tag)
-        func track(_ update: (inout FileReadProgress) -> Void) {
+        func track(_ update: (inout FileReadProgress) -> Void = { _ in }) {
             guard var read = currentRead else { return }
             update(&read)
             read.apdus = apduCount - apdusBefore
+            read.chipTime = chipTime - chipTimeBefore
             currentRead = read
         }
 
-        var resp = try await selectFile(tag: tag )
-        track { _ in }
-
-        // Read first 4 bytes of header to see how big the data structure is
-        guard let readHeaderCmd = NFCISO7816APDU(data:Data([0x00, 0xB0, 0x00, 0x00, 0x00, 0x00,0x04])) else {
-            throw NFCPassportReaderError.UnexpectedError
-        }
-        resp = try await self.send( cmd: readHeaderCmd )
-        track { _ in }
-        guard resp.data.count >= 2 else {
+        let first = try await readFirstBytes(
+            tag: tag,
+            shortFileIdentifier: shortFileIdentifier,
+            firstChunkWhole: firstChunkWhole,
+            track: { track() }
+        )
+        track()
+        guard first.count >= 2 else {
             throw NFCPassportReaderError.CannotDecodeASN1Length
         }
 
-        // Header looks like:  <tag><length of data><nextTag> e.g.60145F01 -
-        // the total length is the 2nd value plus the two header 2 bytes
-        // We've read 4 bytes so we now need to read the remaining bytes from offset 4
-        let (len, o) = try asn1Length([UInt8](resp.data[1...]))
-        var remaining = Int(len)
-        var amountRead = o + 1
-        guard resp.data.count >= amountRead else {
+        // The file starts with <tag><length>: the total length is the length's value plus the
+        // tag and length bytes.
+        let (len, o) = try asn1Length([UInt8](first[1...]))
+        guard first.count >= o + 1 else {
             throw NFCPassportReaderError.CannotDecodeASN1Length
         }
-
-        var data = [UInt8](resp.data[..<amountRead])
+        let fileLength = 1 + o + len
+        // An elementary file can be larger than the data object it holds, so a whole chunk may
+        // carry bytes past its end. Only the data object is hashed for passive authentication.
+        var data = [UInt8](first.prefix(fileLength))
+        var amountRead = data.count
+        var remaining = fileLength - amountRead
         track {
-            $0.length = amountRead + remaining
+            $0.length = fileLength
             $0.bytesRead = amountRead
         }
 
         Logger.tagReader.debug( "TagReader - Number of data bytes to read - \(remaining)" )
 
         while remaining > 0 {
+            // READ BINARY (B0) carries the offset in 15 bits; P1 b8 set means a short file
+            // identifier, which would read another file.
+            guard amountRead <= 0x7FFF else {
+                throw NFCPassportReaderError.NotYetSupported( "Reading past offset 32767 of a file (\(fileLength) bytes)" )
+            }
             let (chunkLength, extended) = currentChunkLength()
             var readAmount = chunkLength
             if chunkLength != 256 && remaining < chunkLength {
@@ -308,10 +376,11 @@ public class TagReader {
                 $0.chunkLength = chunkLength
                 $0.extendedLength = extended
             }
+            let resp: ResponseAPDU
             do {
                 resp = try await self.send( cmd: cmd, useExtendedMode: extended )
             } catch let error as NFCPassportReaderError {
-                track { _ in }
+                track()
                 guard stepDownReadLength(after: error, offset: amountRead) else { throw error }
                 continue
             }
@@ -322,10 +391,11 @@ public class TagReader {
                 Logger.tagReader.error( "TagReader - the chip returned no data at offset \(amountRead) with \(remaining) bytes left" )
                 throw NFCPassportReaderError.ResponseError( "No data returned", resp.sw1, resp.sw2 )
             }
-            data += resp.data
+            let received = [UInt8](resp.data.prefix(remaining))
+            data += received
 
-            remaining -= resp.data.count
-            amountRead += resp.data.count
+            remaining -= received.count
+            amountRead += received.count
             track { $0.bytesRead = amountRead }
             Logger.tagReader.debug( "TagReader - Amount of data left to read - \(remaining)" )
         }
@@ -333,6 +403,99 @@ public class TagReader {
         lastRead = currentRead
         currentRead = nil
         return data
+    }
+
+    /// The first bytes of a file, read by short file identifier and as a whole chunk while the
+    /// chip allows it. A refused read falls back one step, for the rest of the session: a wrong
+    /// length drops whole chunks for the 4-byte header, any other refusal drops the short file
+    /// identifier for a SELECT. A refusal in plain has ended secure messaging: it is thrown, and
+    /// the session reads the upstream way from then on.
+    func readFirstBytes(
+        tag: [UInt8],
+        shortFileIdentifier: UInt8?,
+        firstChunkWhole: Bool,
+        track: () -> Void
+    ) async throws -> [UInt8] {
+        var bySFI = shortFileIdentifier != nil && readsByShortFileIdentifier
+        var sfiRefused = false
+        var selected = false
+        var exactLength: Int?
+        var askedExactLength = false
+        while true {
+            if !bySFI && !selected {
+                _ = try await selectFile(tag: tag)
+                selected = true
+                track()
+                if sfiRefused {
+                    readsByShortFileIdentifier = false
+                    Logger.tagReader.info( "Chip refused a read by short file identifier - selecting files from now on" )
+                }
+            }
+            let whole = firstChunkWhole && readsWholeFirstChunk
+            let (chunkLength, extended) = whole ? currentChunkLength() : (4, false)
+            let length = exactLength ?? chunkLength
+            exactLength = nil
+            let p1: UInt8 = bySFI ? 0x80 | (shortFileIdentifier ?? 0) : 0x00
+            let cmd = NFCISO7816APDU(
+                instructionClass: 0x00,
+                instructionCode: 0xB0,
+                p1Parameter: p1,
+                p2Parameter: 0x00,
+                data: Data(),
+                expectedResponseLength: length
+            )
+
+            let refusal: (error: NFCPassportReaderError, sw1: UInt8, sw2: UInt8)
+            do {
+                let resp = try await send(
+                    cmd: cmd,
+                    useExtendedMode: extended && length == chunkLength,
+                    acceptsEndOfFile: true
+                )
+                track()
+                guard resp.data.isEmpty else { return resp.data }
+                refusal = (
+                    NFCPassportReaderError.ResponseError("No data returned", resp.sw1, resp.sw2),
+                    resp.sw1,
+                    resp.sw2
+                )
+            } catch let NFCPassportReaderError.ResponseError(message, sw1, sw2) {
+                track()
+                guard lastResponseKeptSecureMessaging else {
+                    // The chip has left secure messaging. The retry, once access control is
+                    // established again, reads the way upstream does.
+                    readsByShortFileIdentifier = false
+                    readsWholeFirstChunk = false
+                    extendedResponseLimit = nil
+                    let status = String(format: "%02X%02X", sw1, sw2)
+                    Logger.tagReader.info( "Chip refused a \(length)-byte first read of a file in plain (\(status)) - selecting files and reading the 4-byte header first from now on" )
+                    throw NFCPassportReaderError.ResponseError(message, sw1, sw2)
+                }
+                refusal = (NFCPassportReaderError.ResponseError(message, sw1, sw2), sw1, sw2)
+            }
+
+            let status = String(format: "%02X%02X", refusal.sw1, refusal.sw2)
+            if refusal.sw1 == 0x6C, refusal.sw2 > 0, !askedExactLength {
+                // The chip states how many bytes it has: ask for exactly that.
+                exactLength = Int(refusal.sw2)
+                askedExactLength = true
+            } else if extended && refusal.sw1 == 0x67 {
+                extendedResponseLimit = nil
+                Logger.tagReader.info( "Chip refused a \(length)-byte extended-length read (\(status)) - reading on in short chunks" )
+            } else if whole && (refusal.sw1 == 0x67 || refusal.sw1 == 0x6C) {
+                readsWholeFirstChunk = false
+                Logger.tagReader.info( "Chip refused a \(length)-byte first read of a file (\(status)) - reading the 4-byte header first from now on" )
+            } else if bySFI {
+                bySFI = false
+                sfiRefused = true
+                Logger.tagReader.debug( "TagReader - read by short file identifier refused (\(status))" )
+            } else if whole {
+                readsWholeFirstChunk = false
+                Logger.tagReader.info( "Chip refused a \(length)-byte first read of a file (\(status)) - reading the 4-byte header first from now on" )
+            } else {
+                throw refusal.error
+            }
+        }
     }
 
     /// Reads EF.ATR/INFO (2F01 in the master file), which states the chip's extended-length
@@ -351,9 +514,16 @@ public class TagReader {
         // ask for up to 256 bytes and take the end-of-file warning as the end of the file.
         var expected = 256
         for _ in 0 ..< 2 {
-            let cmd = NFCISO7816APDU(instructionClass: 0x00, instructionCode: 0xB0, p1Parameter: 0x00, p2Parameter: 0x00, data: Data(), expectedResponseLength: expected)
+            let cmd = NFCISO7816APDU(
+                instructionClass: 0x00,
+                instructionCode: 0xB0,
+                p1Parameter: 0x00,
+                p2Parameter: 0x00,
+                data: Data(),
+                expectedResponseLength: expected
+            )
             apduCount += 1
-            let (data, sw1, sw2) = try await tag.sendCommand(apdu: cmd)
+            let (data, sw1, sw2) = try await exchange(cmd)
             if (sw1 == 0x90 && sw2 == 0x00) || (sw1 == 0x62 && sw2 == 0x82) {
                 return data.isEmpty ? nil : [UInt8](data)
             }
@@ -374,10 +544,14 @@ public class TagReader {
         return (maxDataLengthToRead, false)
     }
 
-    /// After a chip refuses a read length (6700 or 6Cxx) the same offset is read again with the
-    /// next smaller length: extended, then 223, then 160 bytes. False when nothing smaller is left.
+    /// After a chip refuses a read length (6700 or 6Cxx) the next reads use the next smaller
+    /// length: extended, then 223, then 160 bytes. True when the same offset can be read again
+    /// in this secure messaging session, which needs the refusal to have come protected; a plain
+    /// one has ended secure messaging, and the caller has to establish it again. False as well
+    /// when nothing smaller is left.
     func stepDownReadLength( after error: NFCPassportReaderError, offset: Int ) -> Bool {
-        guard case let .ResponseError(_, sw1, sw2) = error, (sw1 == 0x67 && sw2 == 0x00) || sw1 == 0x6C else {
+        guard case let .ResponseError(_, sw1, sw2) = error,
+              (sw1 == 0x67 && sw2 == 0x00) || sw1 == 0x6C else {
             return false
         }
         let refused = currentChunkLength().0
@@ -390,6 +564,10 @@ public class TagReader {
             return false
         }
         let next = currentChunkLength().0
+        guard lastResponseKeptSecureMessaging else {
+            Logger.tagReader.info( "Chip refused a \(refused)-byte read at offset \(offset) (\(status)) in plain - secure messaging has to be established again, then \(next)-byte chunks" )
+            return false
+        }
         Logger.tagReader.info( "Chip refused a \(refused)-byte read at offset \(offset) (\(status)) - reading on in \(next)-byte chunks" )
         return true
     }
@@ -406,15 +584,26 @@ public class TagReader {
         // By executing above SELECT command (with data=0x3F00) master file should be selected and you should be able to read EF.CardAccess from passport.
         
         // First select master file
-        let cmd : NFCISO7816APDU = NFCISO7816APDU(instructionClass: 0x00, instructionCode: 0xA4, p1Parameter: 0x00, p2Parameter: 0x0C, data: Data([0x3f,0x00]), expectedResponseLength: -1)
-        
-        _ = try await send( cmd: cmd)
-            
+        _ = try await selectMasterFile()
+
         // Now read EC.CardAccess
         let data = try await self.selectFileAndRead(tag: [0x01,0x1C])
         return data
     }
     
+    func selectMasterFile() async throws -> ResponseAPDU {
+        let cmd = NFCISO7816APDU(
+            instructionClass: 0x00,
+            instructionCode: 0xA4,
+            p1Parameter: 0x00,
+            p2Parameter: 0x0C,
+            data: Data([0x3f,0x00]),
+            expectedResponseLength: -1
+        )
+
+        return try await send( cmd: cmd)
+    }
+
     func selectPassportApplication() async throws -> ResponseAPDU {
         // Finally reselect the eMRTD application so the rest of the reading works as normal
         Logger.tagReader.debug( "Re-selecting eMRTD Application" )
@@ -432,7 +621,13 @@ public class TagReader {
         return try await send( cmd: cmd )
     }
 
-    func send( cmd: NFCISO7816APDU, useExtendedMode : Bool = false ) async throws -> ResponseAPDU {
+    /// Sends a command, under secure messaging when it is set up. `acceptsEndOfFile` lets a READ
+    /// BINARY that ran into the end of the file (6282) return what it read.
+    func send(
+        cmd: NFCISO7816APDU,
+        useExtendedMode : Bool = false,
+        acceptsEndOfFile: Bool = false
+    ) async throws -> ResponseAPDU {
         Logger.tagReader.debug( "TagReader - sending \(cmd)" )
         var toSend = cmd
         if let sm = secureMessaging {
@@ -441,7 +636,7 @@ public class TagReader {
         }
         
         apduCount += 1
-        var (data, sw1, sw2) = try await tag.sendCommand(apdu: toSend)
+        var (data, sw1, sw2) = try await exchange(toSend)
         Logger.tagReader.debug( "TagReader - Received response, size \(data.count)b" )
 
         // Some commands may have bigger response than expected. Read the whole response using INS 0xC0 (GET RESPONSE).
@@ -450,13 +645,16 @@ public class TagReader {
             let nextSegment: Data
             // Overwrite sw1 and sw2.
             apduCount += 1
-            (nextSegment, sw1, sw2) = try await tag.sendCommand(apdu: getResponseCmd)
+            (nextSegment, sw1, sw2) = try await exchange(getResponseCmd)
             Logger.tagReader.debug("Read remaining data. Accumulated: \(data.count + nextSegment.count)b. Last batch \(nextSegment.count)b. Still remaining: \(sw2)b")
             data += nextSegment
         }
 
         var rep = ResponseAPDU(data: [UInt8](data), sw1: sw1, sw2: sw2)
-        
+        // A protected response carries at least DO'99' and DO'8E'; a bare status word under
+        // secure messaging means the chip has left it.
+        lastResponseKeptSecureMessaging = secureMessaging == nil || !data.isEmpty
+
         if let sm = self.secureMessaging {
             rep = try sm.unprotect(rapdu:rep)
             Logger.tagReader.debug("\(String(format:"TagReader [SM - unprotected] \(binToHexRep(rep.data, asArray:true)), sw1:0x%02x sw2:0x%02x", rep.sw1, rep.sw2))" )
@@ -470,7 +668,10 @@ public class TagReader {
         // and the read loop then asks for the same bytes until the session ends. Other commands
         // keep that check until they are verified against chips with the stricter one.
         let isReadBinary = cmd.instructionCode == 0xB0
-        let failed = isReadBinary ? !(rep.sw1 == 0x90 && rep.sw2 == 0x00) : (rep.sw1 != 0x90 && rep.sw2 != 0x00)
+        let endOfFile = acceptsEndOfFile && rep.sw1 == 0x62 && rep.sw2 == 0x82 && !rep.data.isEmpty
+        let failed = isReadBinary
+            ? !(rep.sw1 == 0x90 && rep.sw2 == 0x00) && !endOfFile
+            : (rep.sw1 != 0x90 && rep.sw2 != 0x00)
         if failed {
             Logger.tagReader.error( "Error reading tag: sw1 - 0x\(binToHexRep(rep.sw1)), sw2 - 0x\(binToHexRep(rep.sw2))" )
             let tagError: NFCPassportReaderError
@@ -485,6 +686,20 @@ public class TagReader {
         }
 
         return rep
+    }
+
+    /// One APDU round trip, timed: the time the chip takes, the radio included, against the
+    /// time the phone spends between APDUs.
+    private func exchange( _ apdu: NFCISO7816APDU ) async throws -> (Data, UInt8, UInt8) {
+        let sentAt = Date()
+        defer { chipTime += Date().timeIntervalSince(sentAt) }
+        return try await tag.sendCommand(apdu: apdu)
+    }
+
+    private func withStateLock<T>( _ body: () -> T ) -> T {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return body()
     }
 
     private func decodeError( sw1: UInt8, sw2:UInt8 ) -> String {
