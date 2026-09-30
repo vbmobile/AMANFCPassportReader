@@ -6,12 +6,12 @@ What differs from upstream:
 
 * Chip data is bounds-checked where upstream trusted it: the ASN.1 length decoder (`asn1Length`), the data-group dispatcher (`DataGroupParser.parseDG`), the shared TLV walker (`DataGroup`) and DG1's MRZ parsing reject a length form shorter than it announces, a truncated element, or an MRZ too short for its document type with an error instead of trapping. `asn1Length` is public, so callers that previously crashed on a 0-, 1- or 2-byte input now receive `CannotDecodeASN1Length`. The other data-group parsers are unchanged from upstream.
 * The package, library product and module are renamed to `AMANFCPassportReader`, so client code writes `import AMANFCPassportReader`. The source directories keep their upstream names, so merges from upstream stay path-clean.
-* Versions follow `<upstream>-vb.<n>` (for example `2.3.3-vb.1`), where `<n>` counts fork revisions on top of the given upstream release.
+* Versions are plain `x.y.z`: each fork release takes the next patch number, so the fork of upstream `2.3.3` ships as `2.3.4`. The earlier `2.3.3-vb.1` and `2.3.3-vb.2` tags predate this rule, and `2.3.4` is the same commit as `2.3.3-vb.2`.
 
 Branching and pulling upstream:
 
 * `main` mirrors upstream and carries no fork changes; fast-forward it to the upstream tag being adopted.
-* `develop` carries the fork patches. To pull a new upstream release, rebase (or merge) `develop` onto the new `main`, then cut `<upstream>-vb.1`.
+* `develop` carries the fork patches. To pull a new upstream release, rebase (or merge) `develop` onto the new `main`, then tag the next plain version above both that upstream release and the last fork tag.
 
 ---
 
@@ -29,7 +29,7 @@ Supported features:
 * Reads DG1 (MRZ data) and DG2 (Image) in both JPEG and JPEG2000 formats, DG7, DG11, DG12, DG14 and DG15 (also SOD and COM datagroups)
 * Passive Authentication
 * Active Authentication
-* Chip Authentication (ECDH DES and AES keys tested, DH DES AES keys implemented ad should work but currently not tested)
+* Chip Authentication (ECDH DES and AES keys tested, DH DES AES keys implemented and should work but currently not tested)
 * PACE - currently only Generic Mapping (GM) supported
 * Ability to dump passport stream and read it back in
 * Uses Async/Await
@@ -117,7 +117,7 @@ passportReader.readPassport(mrzKey: mrzKey, tags: [.COM, .DG1, .DG2],
 Extended mode reads (not supported by all passports) can be enabled by passing in the useExtendedMode flag to the readPassport function.
 This will increase the number of bytes that can be read in a call and may be required for some passports that use long AA keys (some Australian passports for example).
 
-A custom Active Authentiion challenge can be provided to the PassportReader to ensure that the challenge/response was specifically executed in the session and not replayed. The app could then send the activeAuthenticationSignature to a backend, along with the rest of the chip data to perform validation.
+A custom Active Authentication challenge can be provided to the PassportReader to ensure that the challenge/response was specifically executed in the session and not replayed. The app could then send the activeAuthenticationSignature to a backend, along with the rest of the chip data to perform validation.
 
 
 ## Logging
@@ -144,11 +144,11 @@ There is a sample app included in the repo which demonstrates the functionality.
 
 
 ## Troubleshooting
-* If when doing the initial Mutual Authenticate challenge, you get an error with and SW1 code 0x63, SW2 code 0x00, reason: No information given, then this is usualy because your MRZ key is incorrect, and possibly because your passport number is not quite right.  If your passport number in the MRZ contains a '<' then you need to include this in the MRZKey - the checksum should work out correct too.  For more details, check out App-D2 in the ICAO 9303 Part 11 document (https://www.icao.int/publications/Documents/9303_p11_cons_en.pdf)
+* If when doing the initial Mutual Authenticate challenge, you get an error with an SW1 code 0x63, SW2 code 0x00, reason: No information given, then this is usually because your MRZ key is incorrect, and possibly because your passport number is not quite right.  If your passport number in the MRZ contains a '<' then you need to include this in the MRZKey - the checksum should work out correct too.  For more details, check out App-D2 in the ICAO 9303 Part 11 document (https://www.icao.int/publications/Documents/9303_p11_cons_en.pdf)
 <br><br>e.g. if the bottom line on the MRZ looks like:
 12345678<8AUT7005233M2507237<<<<<<<<<<<<<<06
 <br><br>
-In this case the passport number is 12345678 but is padded out with an additonal <. This needs to be included in the MRZ key used for BAC.
+In this case the passport number is 12345678 but is padded out with an additional <. This needs to be included in the MRZ key used for BAC.
 e.g. 12345678<870052332507237 would be the key used.
 
 

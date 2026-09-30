@@ -1,3 +1,5 @@
+2.3.4
+   Same code as 2.3.3-vb.2, re-tagged under plain x.y.z versioning
 2.3.3-vb.2
    Renamed the package, library product and module to AMANFCPassportReader — clients change
       `import NFCPassportReader` to `import AMANFCPassportReader`
