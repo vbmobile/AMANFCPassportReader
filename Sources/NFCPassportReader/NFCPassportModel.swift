@@ -473,7 +473,9 @@ public class NFCPassportModel {
         }
         
         if errors != "" {
-            Logger.passportReader.error( "HASH ERRORS - \(errors)" )
+            Logger.passportReader.debug( "HASH ERRORS - \(errors)" )
+            let mismatched = dataGroupHashes.values.filter { !$0.match }.map { $0.id }.sorted()
+            Logger.passportReader.error( "Data group hash check failed - mismatched: \(mismatched.isEmpty ? "none" : mismatched.joined(separator: ", "))" )
             throw PassiveAuthenticationError.InvalidDataGroupHash(errors)
         }
         

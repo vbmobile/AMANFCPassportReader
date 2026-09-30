@@ -24,6 +24,14 @@ public enum PACEMappingType {
                 return "Chip Authentication Mapping"
         }
     }
+
+    var abbreviation: String {
+        switch self {
+            case .GM: return "GM"
+            case .IM: return "IM"
+            case .CAM: return "CAM"
+        }
+    }
 }
 
 @available(iOS 13, macOS 10.15, *)
@@ -167,6 +175,28 @@ public class PACEInfo : SecurityInfo {
         }
 
         return mappingKey
+    }
+
+    /// The standardized domain parameters an ICAO 9303 parameter ID names, for diagnostics.
+    static func domainParameterName(_ parameterId: Int?) -> String {
+        guard let parameterId else { return "not specified" }
+        switch parameterId {
+            case PARAM_ID_GFP_1024_160: return "1024-bit MODP group with 160-bit prime order subgroup"
+            case PARAM_ID_GFP_2048_224: return "2048-bit MODP group with 224-bit prime order subgroup"
+            case PARAM_ID_GFP_2048_256: return "2048-bit MODP group with 256-bit prime order subgroup"
+            case PARAM_ID_ECP_NIST_P192_R1: return "NIST P-192"
+            case PARAM_ID_ECP_BRAINPOOL_P192_R1: return "brainpoolP192r1"
+            case PARAM_ID_ECP_NIST_P224_R1: return "NIST P-224"
+            case PARAM_ID_ECP_BRAINPOOL_P224_R1: return "brainpoolP224r1"
+            case PARAM_ID_ECP_NIST_P256_R1: return "NIST P-256"
+            case PARAM_ID_ECP_BRAINPOOL_P256_R1: return "brainpoolP256r1"
+            case PARAM_ID_ECP_BRAINPOOL_P320_R1: return "brainpoolP320r1"
+            case PARAM_ID_ECP_NIST_P384_R1: return "NIST P-384"
+            case PARAM_ID_ECP_BRAINPOOL_P384_R1: return "brainpoolP384r1"
+            case PARAM_ID_ECP_BRAINPOOL_P512_R1: return "brainpoolP512r1"
+            case PARAM_ID_ECP_NIST_P521_R1: return "NIST P-521"
+            default: return "unsupported"
+        }
     }
 
     public static func getParameterSpec(stdDomainParam : Int) throws -> Int32 {

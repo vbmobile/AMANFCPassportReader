@@ -5,6 +5,7 @@
 //
 
 import Foundation
+import OSLog
 
 #if !os(macOS)
 import UIKit
@@ -12,10 +13,41 @@ import UIKit
 
 @available(iOS 13, macOS 10.15, *)
 public class DataGroup2 : DataGroup {
-    private enum FaceImageFormat {
-        case jpeg
-        case jp2
-        case jpeg2000Codestream
+    enum FaceImageFormat: String {
+        case jpeg = "JPEG"
+        case jp2 = "JPEG 2000 (JP2)"
+        case jpeg2000Codestream = "JPEG 2000 (J2K codestream)"
+
+        /// Any JPEG start of image followed by a marker: JFIF (APP0), Exif (APP1),
+        /// Adobe (APP14) or no application segment at all.
+        static let jpegSignature: [UInt8] = [0xFF, 0xD8, 0xFF]
+        /// SOC followed by SIZ, the first two markers of every JPEG 2000 codestream.
+        static let jpeg2000CodestreamSignature: [UInt8] = [0xFF, 0x4F, 0xFF, 0x51]
+        /// The type of the JPEG 2000 signature box, which opens every JP2 file.
+        static let jp2SignatureBoxType: [UInt8] = [0x6A, 0x50, 0x20, 0x20]
+
+        static func detect(_ bytes: ArraySlice<UInt8>) -> FaceImageFormat? {
+            if bytes.starts(with: jpegSignature) {
+                return .jpeg
+            }
+            if bytes.starts(with: jpeg2000CodestreamSignature) {
+                return .jpeg2000Codestream
+            }
+            if bytes.count >= 8, bytes.dropFirst(4).starts(with: jp2SignatureBoxType) {
+                return .jp2
+            }
+            return nil
+        }
+
+        /// Where the first image signature sits, for records that do not follow the
+        /// ISO/IEC 19794-5 layout this parser walks.
+        static func firstImageOffset(in bytes: [UInt8], from start: Int) -> Int? {
+            guard start < bytes.count else { return nil }
+            for index in start ..< bytes.count where detect(bytes[index...]) != nil {
+                return index
+            }
+            return nil
+        }
     }
     
     
@@ -91,12 +123,19 @@ public class DataGroup2 : DataGroup {
     
     func parseISO19794_5( data : [UInt8] ) throws {
         // Validate header - 'F', 'A' 'C' 0x00 - 0x46414300
-        if data[0] != 0x46 && data[1] != 0x41 && data[2] != 0x43 && data[3] != 0x00 {
-            throw NFCPassportReaderError.InvalidResponse(
-                dataGroupId: datagroupType,
-                expectedTag: 0x46,
-                actualTag: Int(data[0])
-            )
+        guard data.starts(with: [0x46, 0x41, 0x43, 0x00]), data.count >= DataGroup2.facialRecordFixedLength else {
+            // Not a record this parser can walk (an ISO/IEC 39794-5 record, or a
+            // truncated one): take the image from wherever its signature starts.
+            Logger.passportReader.warning( "DG2 facial record is not ISO/IEC 19794-5 - header \(DataGroup2.headerDescription(data[...]))" )
+            guard let imageOffset = FaceImageFormat.firstImageOffset(in: data, from: 0) else {
+                throw NFCPassportReaderError.InvalidResponse(
+                    dataGroupId: datagroupType,
+                    expectedTag: 0x46,
+                    actualTag: Int(data.first ?? 0)
+                )
+            }
+            imageData = try extractFaceImageData(from: data, offset: imageOffset)
+            return
         }
         
         var offset = 4
@@ -131,6 +170,9 @@ public class DataGroup2 : DataGroup {
         // then we are going to skip over them
         // The Feature block is 8 bytes
         offset += nrFeaturePoints * 8
+        guard data.count >= offset + 12 else {
+            throw NFCPassportReaderError.InvalidASN1Value
+        }
         
         faceImageType = binToInt(data[offset..<offset+1])
         offset += 1
@@ -161,35 +203,45 @@ public class DataGroup2 : DataGroup {
     }
     
     private func extractFaceImageData(from data: [UInt8], offset: Int) throws -> [UInt8] {
-        let jpegHeader : [UInt8] = [0xff,0xd8,0xff,0xe0,0x00,0x10,0x4a,0x46,0x49,0x46]
-        let jpeg2000BitmapHeader : [UInt8] = [0x00,0x00,0x00,0x0c,0x6a,0x50,0x20,0x20,0x0d,0x0a]
-        let jpeg2000CodestreamBitmapHeader : [UInt8] = [0xff,0x4f,0xff,0x51]
-        
-        let remaining = Array(data[offset...])
-        
-        // Check for JPEG Image
-        if remaining.starts(with: jpegHeader) {
-            guard let end = findJPEGEnd(in: remaining) else {
-                throw NFCPassportReaderError.UnknownImageFormat
-            }
-            return Array(remaining[..<end])
+        let remaining = offset < data.count ? Array(data[offset...]) : []
+        let header = DataGroup2.headerDescription(remaining[...])
+
+        var format = FaceImageFormat.detect(remaining[...])
+        var imageStart = offset
+        if format == nil, let found = FaceImageFormat.firstImageOffset(in: data, from: offset) {
+            // Some records carry padding or extra fields between the header and the image.
+            format = FaceImageFormat.detect(data[found...])
+            imageStart = found
+            Logger.passportReader.warning( "DG2 image signature found \(found - offset) bytes past the record header - header \(header)" )
         }
-        
-        // Check for jpeg2000CodestreamBitmapHeader
-        if remaining.starts(with: jpeg2000CodestreamBitmapHeader) {
-            guard let end = findJPEG2000CodestreamEnd(in: remaining) else {
-                throw NFCPassportReaderError.UnknownImageFormat
-            }
-            return Array(remaining[..<end])
+
+        guard let format else {
+            Logger.passportReader.error( "DG2 image format not recognised - header \(header), \(remaining.count) bytes" )
+            throw NFCPassportReaderError.UnknownImageFormat
         }
-        
-        // Check for JPEG2000Bitmap
-        if remaining.starts(with: jpeg2000BitmapHeader) {
-            let maxEnd = data.count
-            return try extractJP2BoxData(from: data, offset: offset, maxEnd: maxEnd)
+
+        let image = Array(data[imageStart...])
+        let extracted: [UInt8]
+        switch format {
+            case .jpeg:
+                // The end-of-image marker trims trailing padding; without one the image runs to the end.
+                extracted = Array(image[..<(findJPEGEnd(in: image) ?? image.count)])
+            case .jpeg2000Codestream:
+                extracted = Array(image[..<(findJPEG2000CodestreamEnd(in: image) ?? image.count)])
+            case .jp2:
+                extracted = (try? extractJP2BoxData(from: data, offset: imageStart, maxEnd: data.count)) ?? image
         }
-        
-        throw NFCPassportReaderError.UnknownImageFormat
+        Logger.passportReader.info( "DG2 image \(format.rawValue), \(extracted.count) of \(image.count) bytes - header \(DataGroup2.headerDescription(image[...]))" )
+        return extracted
+    }
+
+    /// ISO/IEC 19794-5 facial record header, facial information and image information
+    /// blocks, up to the image data when no feature points are present.
+    static let facialRecordFixedLength = 46
+
+    /// The first 16 bytes in hex: enough to identify the image format, too short to carry any picture.
+    static func headerDescription(_ bytes: ArraySlice<UInt8>) -> String {
+        bytes.isEmpty ? "(empty)" : bytes.prefix(16).map { String(format: "%02X", $0) }.joined(separator: " ")
     }
     
     private func extractJP2BoxData(from data: [UInt8], offset: Int, maxEnd: Int) throws -> [UInt8] {

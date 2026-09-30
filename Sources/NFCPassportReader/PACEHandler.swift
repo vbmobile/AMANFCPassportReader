@@ -80,6 +80,9 @@ public class PACEHandler {
         Logger.pace.info( "Performing PACE with \(self.paceInfo.getProtocolOIDString())" )
         
         paceOID = paceInfo.getObjectIdentifier()
+        let parameterId = paceInfo.getParameterId()
+        let mappingName = (try? paceInfo.getMappingType())?.abbreviation ?? "unknown"
+        Logger.pace.info( "PACE parameters - OID \(self.paceOID) (\(self.paceInfo.getProtocolOIDString())), mapping \(mappingName), domain parameter ID \(parameterId.map { String($0) } ?? "none") (\(PACEInfo.domainParameterName(parameterId)))" )
         parameterSpec = try paceInfo.getParameterSpec()
         
         mappingType = try paceInfo.getMappingType()  // Either GM, CAM, or IM.
@@ -87,6 +90,7 @@ public class PACEHandler {
         cipherAlg  = try paceInfo.getCipherAlgorithm()  // Either DESede or AES.
         digestAlg = try paceInfo.getDigestAlgorithm()  // Either SHA-1 or SHA-256.
         keyLength = try paceInfo.getKeyLength()  // Get key length  the enc cipher. Either 128, 192, or 256.
+        Logger.pace.info( "PACE algorithms - key agreement \(self.agreementAlg), cipher \(self.cipherAlg)-\(self.keyLength), digest \(self.digestAlg)" )
 
         paceKeyType = PACEHandler.MRZ_PACE_KEY_REFERENCE
         paceKey = try createPaceKey( from: mrzKey )
@@ -103,18 +107,26 @@ public class PACEHandler {
         Logger.pace.debug("keyLength - \(mrzKey)" )
         Logger.pace.debug("paceKey - \(binToHexRep(self.paceKey, asArray:true))" )
 
+        var steps = PACEStepTimes(tagReader: tagReader)
+
         // First start the initial auth call
         _ = try await tagReader.sendMSESetATMutualAuth(oid: paceOID, keyType: paceKeyType)
-            
+        steps.finish("MSE:Set AT")
+
         let decryptedNonce = try await self.doStep1()
+        steps.finish("nonce")
 
         let ephemeralParams = try await self.doStep2(passportNonce: decryptedNonce)
         defer { EVP_PKEY_free( ephemeralParams ) }
+        steps.finish("mapping")
 
         let (ephemeralKeyPair, passportPublicKey) = try await self.doStep3KeyExchange(ephemeralParams: ephemeralParams)
         defer { EVP_PKEY_free(ephemeralKeyPair); EVP_PKEY_free(passportPublicKey) }
+        steps.finish("key agreement")
 
         let (encKey, macKey) = try await self.doStep4KeyAgreement( pcdKeyPair: ephemeralKeyPair, passportPublicKey: passportPublicKey)
+        steps.finish("mutual authentication")
+        Logger.pace.info( "PACE steps - \(steps.summary)" )
         try self.paceCompleted( ksEnc: encKey, ksMac: macKey )
         Logger.pace.debug("PACE SUCCESSFUL" )
     }
@@ -633,6 +645,33 @@ extension PACEHandler {
         EC_POINT_mul(group, output, nil, ecp, privateECKey, nil)
         
         return output
+    }
+}
+
+/// How long each PACE step took, and how much of it went on waiting for the chip rather than on
+/// the phone's own cryptography.
+@available(iOS 15, *)
+struct PACEStepTimes {
+    private let tagReader: TagReader
+    private var startedAt = Date()
+    private var chipTimeAtStart: TimeInterval
+    private var steps: [String] = []
+
+    init(tagReader: TagReader) {
+        self.tagReader = tagReader
+        chipTimeAtStart = tagReader.chipTime
+    }
+
+    var summary: String {
+        steps.joined(separator: ", ")
+    }
+
+    mutating func finish(_ step: String) {
+        let total = Int((Date().timeIntervalSince(startedAt) * 1000).rounded())
+        let chip = Int(((tagReader.chipTime - chipTimeAtStart) * 1000).rounded())
+        steps.append("\(step) \(total) ms (chip \(chip) ms)")
+        startedAt = Date()
+        chipTimeAtStart = tagReader.chipTime
     }
 }
 
