@@ -706,7 +706,11 @@ private extension ChipReadTests {
         let header: [UInt8] = totalLength - 2 < 0x80
             ? [tag, UInt8(totalLength - 2)]
             : [tag, 0x82, UInt8((totalLength - 4) >> 8), UInt8((totalLength - 4) & 0xFF)]
-        let body = (0 ..< totalLength - header.count).map { UInt8(($0 * 31 + 17) & 0xFF) }
+        let bodyLength: Int = totalLength - header.count
+        let body: [UInt8] = (0 ..< bodyLength).map { (index: Int) -> UInt8 in
+            let value: Int = index * 31 + 17
+            return UInt8(value & 0xFF)
+        }
         return header + body
     }
 

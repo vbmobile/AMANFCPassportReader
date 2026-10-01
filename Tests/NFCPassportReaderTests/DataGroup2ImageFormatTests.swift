@@ -139,7 +139,9 @@ private extension DataGroup2ImageFormatTests {
 
     func jp2Box(type: String, payload: [UInt8]) -> [UInt8] {
         let length = UInt32(8 + payload.count)
-        return withUnsafeBytes(of: length.bigEndian, Array.init) + Array(type.utf8) + payload
+        let lengthBytes: [UInt8] = withUnsafeBytes(of: length.bigEndian) { Array($0) }
+        let typeBytes: [UInt8] = Array(type.utf8)
+        return lengthBytes + typeBytes + payload
     }
 
     func parse(image: [UInt8]) throws -> DataGroup2 {
@@ -148,19 +150,22 @@ private extension DataGroup2ImageFormatTests {
 
     /// An ISO/IEC 19794-5 facial record header with one image and no feature points, up to the image data.
     var facialRecordHeader: [UInt8] {
-        [0x46, 0x41, 0x43, 0x00, 0x30, 0x31, 0x30, 0x00]  // "FAC", version "010"
-            + [0x00, 0x00, 0x00, 0x00]  // length of record
-            + [0x00, 0x01]  // number of facial images
-            + [0x00, 0x00, 0x00, 0x00]  // facial record data length
-            + [0x00, 0x00]  // number of feature points
-            + [0x00, 0x00, 0x00]  // gender, eye colour, hair colour
-            + [0x00, 0x00, 0x00]  // feature mask
-            + [0x00, 0x00]  // expression
-            + [0x00, 0x00, 0x00]  // pose angle
-            + [0x00, 0x00, 0x00]  // pose angle uncertainty
-            + [0x01, 0x00]  // face image type, image data type
-            + [0x00, 0x10, 0x00, 0x10]  // width, height
-            + [0x01, 0x00, 0x00, 0x00, 0x00, 0x00]  // colour space, source type, device type, quality
+        let fields: [[UInt8]] = [
+            [0x46, 0x41, 0x43, 0x00, 0x30, 0x31, 0x30, 0x00],  // "FAC", version "010"
+            [0x00, 0x00, 0x00, 0x00],  // length of record
+            [0x00, 0x01],  // number of facial images
+            [0x00, 0x00, 0x00, 0x00],  // facial record data length
+            [0x00, 0x00],  // number of feature points
+            [0x00, 0x00, 0x00],  // gender, eye colour, hair colour
+            [0x00, 0x00, 0x00],  // feature mask
+            [0x00, 0x00],  // expression
+            [0x00, 0x00, 0x00],  // pose angle
+            [0x00, 0x00, 0x00],  // pose angle uncertainty
+            [0x01, 0x00],  // face image type, image data type
+            [0x00, 0x10, 0x00, 0x10],  // width, height
+            [0x01, 0x00, 0x00, 0x00, 0x00, 0x00],  // colour space, source type, device type, quality
+        ]
+        return Array(fields.joined())
     }
 
     func tlv(_ tag: [UInt8], _ value: [UInt8]) throws -> [UInt8] {
