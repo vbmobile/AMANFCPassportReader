@@ -652,6 +652,36 @@ final class ChipReadTests: XCTestCase {
         XCTAssertEqual(order, [.SOD, .DG1, .DG2, .DG14])
     }
 
+    func testSecureElementsAreSkippedEvenWhenAskedForByName() {
+        let order = PassportReader.readOrder(
+            declared: [.SOD, .DG1, .DG2, .DG3, .DG4],
+            requested: [.DG1, .DG3, .DG4, .DG2],
+            skipSecureElements: true
+        )
+
+        XCTAssertEqual(order, [.DG1, .DG2])
+    }
+
+    // DG3 and DG4 open only after Terminal Authentication, which this reader does not
+    // perform: asking for them only draws a 6982 and a secure-messaging restart.
+    func testSessionNeverAsksTheChipForDG3OrDG4() async throws {
+        let com = try Self.com(declaring: [0x61, 0x63, 0x76])
+        let dg1 = try Self.dataGroup1()
+        let dg3 = Self.file(tag: 0x63, totalLength: 40)
+        let dg4 = Self.file(tag: 0x76, totalLength: 40)
+        let (reader, chip) = makeReader(files: [comId: com, dg1Id: dg1, [0x01, 0x03]: dg3, [0x01, 0x04]: dg4])
+        let passportReader = PassportReader()
+        passportReader.dataGroupsToRead = [.COM, .DG1, .DG3, .DG4]
+        passportReader.readAllDatagroups = false
+
+        try await passportReader.readDataGroups(tagReader: reader)
+
+        let firstReads = chip.readBinaryExchanges.filter { $0.p1 & 0x80 != 0 }.map(\.p1)
+        XCTAssertEqual(firstReads, [0x9E, 0x81])
+        XCTAssertEqual(reader.apduCount, 2)
+        XCTAssertFalse(chip.exchanges.contains { $0.instruction == 0xA4 })
+    }
+
     func testSessionReadsCOMThenTheRequestedGroupsInOrder() async throws {
         let com = try Self.com(declaring: [0x61, 0x75])
         let dg1 = try Self.dataGroup1()
