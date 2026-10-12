@@ -46,6 +46,86 @@ struct FileReadProgress {
     }
 }
 
+/// What one command cost, for the per-APDU trace: its header and lengths, the status word the
+/// chip answered with once secure messaging is removed, and where the time went. It holds no
+/// command or response bytes, which carry keys and document data.
+struct APDUTrace {
+    let number: Int
+    let instruction: UInt8
+    let p1: UInt8
+    let p2: UInt8
+    let commandDataLength: Int
+    /// -1 when the command expects no response data.
+    let expectedLength: Int
+    let extendedLength: Bool
+    let protected: Bool
+    var responseLength = 0
+    var sw1: UInt8 = 0
+    var sw2: UInt8 = 0
+    /// Round trips the command took, GET RESPONSE included.
+    var exchanges = 0
+    var chipTime: TimeInterval = 0
+    /// Time the phone spent between the previous answer and this command going out: secure
+    /// messaging, parsing and logging.
+    var phoneTime: TimeInterval?
+    var error: Error?
+
+    var summary: String {
+        var text = "APDU \(number) \(Self.name(of: instruction))"
+        if instruction == 0xB0 {
+            text += p1 & 0x80 != 0
+                ? String(format: " SFI %02X offset %d", p1 & 0x1F, p2)
+                : " offset \(Int(p1) << 8 | Int(p2))"
+        } else {
+            text += String(format: " P1P2 %02X%02X", p1, p2)
+        }
+        if commandDataLength > 0 {
+            text += ", Lc \(commandDataLength)"
+        }
+        if expectedLength >= 0 {
+            text += ", Le \(expectedLength)"
+        }
+        if extendedLength {
+            text += " extended"
+        }
+        text += protected ? ", SM" : ", plain"
+        if let error {
+            text += " - failed: \(diagnosticDescription(of: error))"
+        } else {
+            text += String(format: " - %d B, SW %02X%02X", responseLength, sw1, sw2)
+        }
+        text += ", chip \(Self.milliseconds(chipTime)) ms"
+        if exchanges > 1 {
+            text += " over \(exchanges) exchanges"
+        }
+        if let phoneTime {
+            text += ", phone \(Self.milliseconds(phoneTime)) ms"
+        }
+        return text
+    }
+}
+
+// MARK: - Private
+private extension APDUTrace {
+    static func name(of instruction: UInt8) -> String {
+        switch instruction {
+        case 0xB0: return "READ BINARY"
+        case 0xA4: return "SELECT"
+        case 0x84: return "GET CHALLENGE"
+        case 0x82: return "MUTUAL AUTHENTICATE"
+        case 0x88: return "INTERNAL AUTHENTICATE"
+        case 0x22: return "MSE"
+        case 0x86: return "GENERAL AUTHENTICATE"
+        case 0xC0: return "GET RESPONSE"
+        default: return String(format: "INS %02X", instruction)
+        }
+    }
+
+    static func milliseconds(_ interval: TimeInterval) -> Int {
+        Int((interval * 1000).rounded())
+    }
+}
+
 @available(iOS 15, *)
 public class TagReader {
     /// Plaintext bytes per READ BINARY when the chip states no buffer sizes. 223 is the largest
@@ -89,6 +169,14 @@ public class TagReader {
     private var storedLastRead : FileReadProgress?
 
     var progress : ((Int)->())?
+
+    /// Told about every command once it is answered or has failed. Nil leaves the trace off.
+    var apduObserver : ((APDUTrace) -> Void)?
+    /// Told a file's length as soon as its first bytes give it, with the chunk length the rest
+    /// will be read in, so a session that dies mid-file still reports how large the file was.
+    var fileLengthObserver : ((FileReadProgress, Int) -> Void)?
+    private var activeTrace : APDUTrace?
+    private var lastAnswerAt : Date?
 
     init( tag: NFCISO7816Tag ) {
         self.tag = ISO7816TagTransport(tag: tag)
@@ -345,6 +433,9 @@ public class TagReader {
             $0.length = fileLength
             $0.bytesRead = amountRead
         }
+        if let read = currentRead {
+            fileLengthObserver?(read, currentChunkLength().0)
+        }
 
         Logger.tagReader.debug( "TagReader - Number of data bytes to read - \(remaining)" )
 
@@ -522,8 +613,18 @@ public class TagReader {
                 data: Data(),
                 expectedResponseLength: expected
             )
+            beginTrace(cmd, extended: false)
             apduCount += 1
-            let (data, sw1, sw2) = try await exchange(cmd)
+            let data: Data
+            let sw1: UInt8
+            let sw2: UInt8
+            do {
+                (data, sw1, sw2) = try await exchange(cmd)
+            } catch {
+                endTrace(error: error)
+                throw error
+            }
+            endTrace(responseLength: data.count, sw1: sw1, sw2: sw2)
             if (sw1 == 0x90 && sw2 == 0x00) || (sw1 == 0x62 && sw2 == 0x82) {
                 return data.isEmpty ? nil : [UInt8](data)
             }
@@ -635,19 +736,28 @@ public class TagReader {
             Logger.tagReader.debug("TagReader - [SM] \(toSend)" )
         }
         
+        beginTrace(cmd, extended: useExtendedMode || cmd.expectedResponseLength > 256)
         apduCount += 1
-        var (data, sw1, sw2) = try await exchange(toSend)
-        Logger.tagReader.debug( "TagReader - Received response, size \(data.count)b" )
+        var data: Data
+        var sw1: UInt8
+        var sw2: UInt8
+        do {
+            (data, sw1, sw2) = try await exchange(toSend)
+            Logger.tagReader.debug( "TagReader - Received response, size \(data.count)b" )
 
-        // Some commands may have bigger response than expected. Read the whole response using INS 0xC0 (GET RESPONSE).
-        while (sw1 == 0x61) {
-            let getResponseCmd = NFCISO7816APDU(instructionClass: 0x0, instructionCode: 0xC0, p1Parameter: 0x0, p2Parameter: 0x0, data: Data(), expectedResponseLength: Int(sw2))
-            let nextSegment: Data
-            // Overwrite sw1 and sw2.
-            apduCount += 1
-            (nextSegment, sw1, sw2) = try await exchange(getResponseCmd)
-            Logger.tagReader.debug("Read remaining data. Accumulated: \(data.count + nextSegment.count)b. Last batch \(nextSegment.count)b. Still remaining: \(sw2)b")
-            data += nextSegment
+            // Some commands may have bigger response than expected. Read the whole response using INS 0xC0 (GET RESPONSE).
+            while (sw1 == 0x61) {
+                let getResponseCmd = NFCISO7816APDU(instructionClass: 0x0, instructionCode: 0xC0, p1Parameter: 0x0, p2Parameter: 0x0, data: Data(), expectedResponseLength: Int(sw2))
+                let nextSegment: Data
+                // Overwrite sw1 and sw2.
+                apduCount += 1
+                (nextSegment, sw1, sw2) = try await exchange(getResponseCmd)
+                Logger.tagReader.debug("Read remaining data. Accumulated: \(data.count + nextSegment.count)b. Last batch \(nextSegment.count)b. Still remaining: \(sw2)b")
+                data += nextSegment
+            }
+        } catch {
+            endTrace(error: error)
+            throw error
         }
 
         var rep = ResponseAPDU(data: [UInt8](data), sw1: sw1, sw2: sw2)
@@ -656,9 +766,16 @@ public class TagReader {
         lastResponseKeptSecureMessaging = secureMessaging == nil || !data.isEmpty
 
         if let sm = self.secureMessaging {
-            rep = try sm.unprotect(rapdu:rep)
+            do {
+                rep = try sm.unprotect(rapdu:rep)
+            } catch {
+                endTrace(responseLength: data.count, sw1: sw1, sw2: sw2, error: error)
+                throw error
+            }
+            endTrace(responseLength: rep.data.count, sw1: rep.sw1, sw2: rep.sw2)
             Logger.tagReader.debug("\(String(format:"TagReader [SM - unprotected] \(binToHexRep(rep.data, asArray:true)), sw1:0x%02x sw2:0x%02x", rep.sw1, rep.sw2))" )
         } else {
+            endTrace(responseLength: rep.data.count, sw1: rep.sw1, sw2: rep.sw2)
             Logger.tagReader.debug("\(String(format:"TagReader [unprotected] \(binToHexRep(rep.data, asArray:true)), sw1:0x%02x sw2:0x%02x", rep.sw1, rep.sw2))" )
             
         }
@@ -692,7 +809,20 @@ public class TagReader {
     /// time the phone spends between APDUs.
     private func exchange( _ apdu: NFCISO7816APDU ) async throws -> (Data, UInt8, UInt8) {
         let sentAt = Date()
-        defer { chipTime += Date().timeIntervalSince(sentAt) }
+        let phoneTime = lastAnswerAt.map { sentAt.timeIntervalSince($0) }
+        defer {
+            let answeredAt = Date()
+            let elapsed = answeredAt.timeIntervalSince(sentAt)
+            chipTime += elapsed
+            lastAnswerAt = answeredAt
+            if activeTrace != nil {
+                activeTrace?.exchanges += 1
+                activeTrace?.chipTime += elapsed
+                if activeTrace?.phoneTime == nil {
+                    activeTrace?.phoneTime = phoneTime
+                }
+            }
+        }
         return try await tag.sendCommand(apdu: apdu)
     }
 
@@ -769,6 +899,37 @@ public class TagReader {
         }
         
         return "Unknown error - sw1: 0x\(binToHexRep(sw1)), sw2 - 0x\(binToHexRep(sw2)) "
+    }
+}
+
+// MARK: - Private
+@available(iOS 15, *)
+private extension TagReader {
+    func beginTrace( _ cmd: NFCISO7816APDU, extended: Bool ) {
+        guard apduObserver != nil else {
+            activeTrace = nil
+            return
+        }
+        activeTrace = APDUTrace(
+            number: apduCount + 1,
+            instruction: cmd.instructionCode,
+            p1: cmd.p1Parameter,
+            p2: cmd.p2Parameter,
+            commandDataLength: cmd.data?.count ?? 0,
+            expectedLength: cmd.expectedResponseLength,
+            extendedLength: extended,
+            protected: secureMessaging != nil
+        )
+    }
+
+    func endTrace( responseLength: Int = 0, sw1: UInt8 = 0, sw2: UInt8 = 0, error: Error? = nil ) {
+        guard var trace = activeTrace, let apduObserver else { return }
+        activeTrace = nil
+        trace.responseLength = responseLength
+        trace.sw1 = sw1
+        trace.sw2 = sw2
+        trace.error = error
+        apduObserver(trace)
     }
 }
 
