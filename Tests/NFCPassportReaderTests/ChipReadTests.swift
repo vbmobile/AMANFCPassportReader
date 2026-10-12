@@ -724,8 +724,9 @@ final class ChipReadTests: XCTestCase {
         let trace = messages.filter { $0.contains("[apdu]") }
         XCTAssertEqual(trace.count, reader.apduCount)
         // COM is shorter than the chunk asked for: the chip answers with the end-of-file warning.
-        XCTAssertTrue(trace.contains { $0.contains("APDU 1 READ BINARY SFI 1E offset 0, Le 223, SM - \(com.count) B, SW 6282, chip ") }, "\(trace)")
-        XCTAssertTrue(trace.contains { $0.contains("APDU 3 READ BINARY offset 223, Le 223, SM - 223 B, SW 9000, chip ") && $0.contains(", phone ") }, "\(trace)")
+        XCTAssertTrue(trace.contains { $0.contains("APDU 1 READ BINARY SFI 1E offset 0, Le 223, SM - \(com.count) B, SW 6282, round trip ") }, "\(trace)")
+        XCTAssertTrue(trace.contains { $0.contains("APDU 3 READ BINARY offset 223, Le 223, SM - 223 B, SW 9000, round trip ") && $0.contains(", phone ") }, "\(trace)")
+        XCTAssertFalse(trace.contains { $0.contains("resumed") }, "\(trace)")
         let mrzBytes = [UInt8]("THATCHER".utf8)
         let mrzHex = mrzBytes.map { String(format: "%02X", $0) }
         for message in messages {
@@ -733,6 +734,33 @@ final class ChipReadTests: XCTestCase {
             XCTAssertFalse(message.contains(mrzHex.joined()))
             XCTAssertFalse(message.contains(mrzHex.joined(separator: " ")))
         }
+    }
+
+    func testAPDUTraceShowsTheWaitAfterCoreNFCAnswers() async throws {
+        let com = try Self.com(declaring: [0x61])
+        let (simulated, chip) = makeReader(files: [comId: com])
+        let reader = TagReader(transport: LateResumingTransport(chip: chip))
+        reader.secureMessaging = simulated.secureMessaging
+        let passportReader = sessionReader(reading: [.COM], apduTrace: true)
+        passportReader.attachDiagnostics(to: reader)
+
+        let messages = await collect { try? await passportReader.readDataGroups(tagReader: reader) }
+
+        let trace = messages.filter { $0.contains("[apdu]") }
+        XCTAssertFalse(trace.isEmpty)
+        XCTAssertTrue(trace.allSatisfy { $0.contains(" ms (resumed ") && $0.contains(" ms after CoreNFC answered)") }, "\(trace)")
+    }
+
+    func testReaderOptionsNameTheSessionQueue() async {
+        let (reader, _) = makeReader(files: [:])
+        let passportReader = sessionReader(reading: [.COM], apduTrace: false)
+
+        let mainQueue = await collect { passportReader.attachDiagnostics(to: reader) }
+        passportReader.dedicatedSessionQueue = true
+        let dedicatedQueue = await collect { passportReader.attachDiagnostics(to: reader) }
+
+        XCTAssertTrue(mainQueue.contains { $0.contains("Reader options") && $0.contains("session callbacks on the main queue") }, "\(mainQueue)")
+        XCTAssertTrue(dedicatedQueue.contains { $0.contains("Reader options") && $0.contains("session callbacks on a dedicated queue") }, "\(dedicatedQueue)")
     }
 
     // MUTUAL AUTHENTICATE carries the BAC key material: its trace may give the length only.
@@ -901,6 +929,26 @@ private final class MessageBox: @unchecked Sendable {
         lock.lock()
         stored.append(message)
         lock.unlock()
+    }
+}
+
+/// A session whose read resumes a while after CoreNFC delivered each answer, as when the
+/// session's queue is busy.
+private final class LateResumingTransport: APDUTransport, @unchecked Sendable {
+    let chip: SimulatedChip
+    private(set) var lastAnswerDeliveredAt: Date?
+
+    init(chip: SimulatedChip) {
+        self.chip = chip
+    }
+
+    var historicalBytes: Data? { chip.historicalBytes }
+
+    func sendCommand(apdu: NFCISO7816APDU) async throws -> (Data, UInt8, UInt8) {
+        let answer = try await chip.sendCommand(apdu: apdu)
+        lastAnswerDeliveredAt = Date()
+        try await Task.sleep(nanoseconds: 20_000_000)
+        return answer
     }
 }
 

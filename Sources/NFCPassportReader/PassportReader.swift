@@ -85,6 +85,11 @@ public class PassportReader : NSObject {
     /// large portrait takes about a hundred lines.
     public var apduTrace : Bool = false
 
+    /// Has the reader session deliver its callbacks, APDU answers included, on a serial queue
+    /// of its own rather than the main queue, so the host's UI work cannot hold up the chip
+    /// exchange while iOS keeps counting the tag time. Off by default.
+    public var dedicatedSessionQueue : Bool = false
+
     /// About how long iOS keeps a connected tag before invalidating the session. Apple states no
     /// figure; the session log measures the time left against it.
     static let tagTimeLimit : TimeInterval = 20
@@ -156,7 +161,8 @@ public class PassportReader : NSObject {
         Logger.session.info( "Chip session started at \(Self.timestamp(startedAt)) - reading \(requested)" )
 
         if NFCTagReaderSession.readingAvailable {
-            readerSession = NFCTagReaderSession(pollingOption: [.iso14443], delegate: self, queue: nil)
+            let sessionQueue = dedicatedSessionQueue ? DispatchQueue(label: "AMANFCPassportReader.session") : nil
+            readerSession = NFCTagReaderSession(pollingOption: [.iso14443], delegate: self, queue: sessionQueue)
             
             self.updateReaderSessionMessage( alertMessage: NFCViewDisplayMessage.requestPresentPassport )
             readerSession?.begin()
@@ -466,7 +472,7 @@ extension PassportReader {
                             try await caHandler.doChipAuthentication()
                             self.passport.chipAuthenticationStatus = .success
                             let caChip = Self.milliseconds(tagReader.chipTime - caChipTimeBefore)
-                            Logger.session.info( "\(self.sessionClock()) Chip Authentication succeeded in \(Self.milliseconds(since: caStartedAt)) ms, \(caChip) ms of it waiting on the chip" )
+                            Logger.session.info( "\(self.sessionClock()) Chip Authentication succeeded in \(Self.milliseconds(since: caStartedAt)) ms, \(caChip) ms of it in APDU round trips" )
                         } catch {
                             Logger.passportReader.info( "Chip Authentication failed - re-establishing BAC")
                             Logger.session.error( "\(self.sessionClock()) Chip Authentication failed after \(Self.milliseconds(since: caStartedAt)) ms - \(error)" )
@@ -601,13 +607,13 @@ extension PassportReader {
         Int((interval * 1000).rounded())
     }
 
-    /// ", 14 APDUs, 223-byte chunks, 1650 ms of it waiting on the chip"
+    /// ", 14 APDUs, 223-byte chunks, 1650 ms of it in APDU round trips"
     static func transferDescription(_ read: FileReadProgress) -> String {
         var text = ", \(read.apdus) APDUs"
         if read.chunkLength > 0 {
             text += ", \(read.chunkDescription)"
         }
-        return text + ", \(milliseconds(read.chipTime)) ms of it waiting on the chip"
+        return text + ", \(milliseconds(read.chipTime)) ms of it in APDU round trips"
     }
 
     /// Establishes secure messaging again after the chip dropped it: PACE when the session used
@@ -665,7 +671,7 @@ extension PassportReader {
                 Logger.apdu.info( "\(self.sessionClock()) \(trace.summary)" )
             }
             : nil
-        Logger.session.info( "\(self.sessionClock()) Reader options - APDU trace \(self.apduTrace ? "on" : "off"), extended-length reads \(self.extendedLengthReads ? "on" : "off"), read length \(self.dataAmountToReadOverride.map { "\($0) bytes (host override)" } ?? "\(tagReader.maxDataLengthToRead) bytes"), PACE \(self.skipPACE ? "skipped" : "on"), Chip Authentication \(self.skipCA ? "skipped" : "on")" )
+        Logger.session.info( "\(self.sessionClock()) Reader options - APDU trace \(self.apduTrace ? "on" : "off"), extended-length reads \(self.extendedLengthReads ? "on" : "off"), read length \(self.dataAmountToReadOverride.map { "\($0) bytes (host override)" } ?? "\(tagReader.maxDataLengthToRead) bytes"), PACE \(self.skipPACE ? "skipped" : "on"), Chip Authentication \(self.skipCA ? "skipped" : "on"), session callbacks on \(self.dedicatedSessionQueue ? "a dedicated queue" : "the main queue")" )
     }
 
     /// "DG2 is 23456 bytes - 105 more APDUs in 223-byte chunks, ~14.2 s at 135 ms per APDU so
