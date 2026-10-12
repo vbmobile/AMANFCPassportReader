@@ -606,6 +606,45 @@ final class ChipReadTests: XCTestCase {
         }, "\(messages)")
     }
 
+    func testBACOnlySessionChecksExtendedLengthFromTheMasterFileAndReselectsTheApplication() async throws {
+        let atrInfo: [UInt8] = [0x7F, 0x66, 0x08, 0x02, 0x02, 0x04, 0x00, 0x02, 0x02, 0x04, 0x00]
+        let chip = SimulatedChip(files: [[0x2F, 0x01]: atrInfo])
+        let reader = TagReader(transport: chip)
+        let passportReader = PassportReader()
+        passportReader.extendedLengthReads = true
+
+        await passportReader.detectExtendedLengthWithoutPACE(tagReader: reader)
+
+        XCTAssertEqual(reader.extendedResponseLimit, 1024)
+        let selects = chip.exchanges.filter { $0.instruction == 0xA4 }.map(\.p1)
+        XCTAssertEqual(selects.first, 0x00)
+        XCTAssertEqual(selects.last, 0x04)
+    }
+
+    func testBACOnlySessionSendsNothingForExtendedLengthWhileItIsOff() async {
+        let chip = SimulatedChip(files: [:])
+        chip.historicalBytes = Data([0x80, 0x73, 0x00, 0x00, 0x40])
+        let reader = TagReader(transport: chip)
+
+        let messages = await collect { await PassportReader().detectExtendedLengthWithoutPACE(tagReader: reader) }
+
+        XCTAssertTrue(chip.exchanges.isEmpty)
+        XCTAssertTrue(messages.contains { $0.contains("extended-length reads off") }, "\(messages)")
+    }
+
+    func testClearedReadLengthOverrideNoLongerReachesTheNextSession() async {
+        let (reader, _) = makeReader(files: [:])
+        let passportReader = PassportReader()
+        passportReader.overrideNFCDataAmountToRead(amount: 0xA0)
+
+        let overridden = await collect { passportReader.attachDiagnostics(to: reader) }
+        passportReader.clearNFCDataAmountOverride()
+        let cleared = await collect { passportReader.attachDiagnostics(to: reader) }
+
+        XCTAssertTrue(overridden.contains { $0.contains("read length 160 bytes (host override)") }, "\(overridden)")
+        XCTAssertTrue(cleared.contains { $0.contains("Reader options") && !$0.contains("host override") }, "\(cleared)")
+    }
+
     func testCardAccessStillReadsInPlainModeTheUpstreamWay() async throws {
         let cardAccess = Self.file(tag: 0x31, totalLength: 22)
         let chip = SimulatedChip(files: [[0x01, 0x1C]: cardAccess])
@@ -699,10 +738,134 @@ final class ChipReadTests: XCTestCase {
         XCTAssertEqual(reader.apduCount, 5)
         XCTAssertFalse(chip.exchanges.contains { $0.instruction == 0xA4 })
     }
+
+    // MARK: - Session log
+
+    func testAPDUTraceReportsEveryCommandWithoutItsBytes() async throws {
+        let com = try Self.com(declaring: [0x61, 0x75])
+        let dg1 = try Self.dataGroup1()
+        let dg2 = try Self.dataGroup2(imageBytes: 500)
+        let (reader, _) = makeReader(files: [comId: com, dg1Id: dg1, dg2Id: dg2])
+        let passportReader = sessionReader(reading: [.COM, .DG2, .DG1], apduTrace: true)
+        passportReader.attachDiagnostics(to: reader)
+
+        let messages = await collect { try? await passportReader.readDataGroups(tagReader: reader) }
+
+        let trace = messages.filter { $0.contains("[apdu]") }
+        XCTAssertEqual(trace.count, reader.apduCount)
+        // COM is shorter than the chunk asked for: the chip answers with the end-of-file warning.
+        XCTAssertTrue(trace.contains { $0.contains("APDU 1 READ BINARY SFI 1E offset 0, Le 223, SM - \(com.count) B, SW 6282, round trip ") }, "\(trace)")
+        XCTAssertTrue(trace.contains { $0.contains("APDU 3 READ BINARY offset 223, Le 223, SM - 223 B, SW 9000, round trip ") && $0.contains(", phone ") }, "\(trace)")
+        XCTAssertFalse(trace.contains { $0.contains("resumed") }, "\(trace)")
+        let mrzBytes = [UInt8]("THATCHER".utf8)
+        let mrzHex = mrzBytes.map { String(format: "%02X", $0) }
+        for message in messages {
+            XCTAssertFalse(message.contains("THATCHER"))
+            XCTAssertFalse(message.contains(mrzHex.joined()))
+            XCTAssertFalse(message.contains(mrzHex.joined(separator: " ")))
+        }
+    }
+
+    func testAPDUTraceShowsTheWaitAfterCoreNFCAnswers() async throws {
+        let com = try Self.com(declaring: [0x61])
+        let (simulated, chip) = makeReader(files: [comId: com])
+        let reader = TagReader(transport: LateResumingTransport(chip: chip))
+        reader.secureMessaging = simulated.secureMessaging
+        let passportReader = sessionReader(reading: [.COM], apduTrace: true)
+        passportReader.attachDiagnostics(to: reader)
+
+        let messages = await collect { try? await passportReader.readDataGroups(tagReader: reader) }
+
+        let trace = messages.filter { $0.contains("[apdu]") }
+        XCTAssertFalse(trace.isEmpty)
+        XCTAssertTrue(trace.allSatisfy { $0.contains(" ms (resumed ") && $0.contains(" ms after CoreNFC answered)") }, "\(trace)")
+    }
+
+    func testReaderOptionsNameTheSessionQueue() async {
+        let (reader, _) = makeReader(files: [:])
+        let passportReader = sessionReader(reading: [.COM], apduTrace: false)
+
+        let mainQueue = await collect { passportReader.attachDiagnostics(to: reader) }
+        passportReader.dedicatedSessionQueue = true
+        let dedicatedQueue = await collect { passportReader.attachDiagnostics(to: reader) }
+
+        XCTAssertTrue(mainQueue.contains { $0.contains("Reader options") && $0.contains("session callbacks on the main queue") }, "\(mainQueue)")
+        XCTAssertTrue(dedicatedQueue.contains { $0.contains("Reader options") && $0.contains("session callbacks on a dedicated queue") }, "\(dedicatedQueue)")
+    }
+
+    // MUTUAL AUTHENTICATE carries the BAC key material: its trace may give the length only.
+    func testAPDUTraceLeavesAuthenticationDataOut() async {
+        let chip = SimulatedChip(files: [:])
+        let reader = TagReader(transport: chip)
+        let passportReader = sessionReader(reading: [.COM], apduTrace: true)
+        passportReader.attachDiagnostics(to: reader)
+        let secret: [UInt8] = [0xDE, 0xAD, 0xBE, 0xEF, 0x13, 0x37, 0xC0, 0xDE]
+
+        let messages = await collect { _ = try? await reader.doMutualAuthentication(cmdData: Data(secret)) }
+
+        XCTAssertTrue(messages.contains { $0.contains("MUTUAL AUTHENTICATE P1P2 0000, Lc 8, Le 256, plain") }, "\(messages)")
+        XCTAssertFalse(messages.contains { $0.uppercased().contains("DEADBEEF") || $0.uppercased().contains("DE AD BE EF") })
+    }
+
+    func testAPDUTraceReportsACommandThatFailsInTransit() async throws {
+        let com = try Self.com(declaring: [0x61])
+        let (simulated, chip) = makeReader(files: [comId: com])
+        let underlying = NSError(domain: "ProbeTransport", code: 7)
+        let failure = NSError(domain: "ProbeSession", code: 42, userInfo: [NSUnderlyingErrorKey: underlying])
+        let reader = TagReader(transport: ThrowingTransport(chip: chip, error: failure))
+        reader.secureMessaging = simulated.secureMessaging
+        let passportReader = sessionReader(reading: [.COM], apduTrace: true)
+        passportReader.attachDiagnostics(to: reader)
+
+        let messages = await collect { try? await passportReader.readDataGroups(tagReader: reader) }
+
+        let trace = messages.filter { $0.contains("[apdu]") }
+        XCTAssertTrue(trace.contains {
+            $0.contains("APDU 1 READ BINARY SFI 1E offset 0, Le 223, SM - failed: ProbeSession 42: ")
+                && $0.contains("(underlying ProbeTransport 7), round trip ")
+        }, "\(trace)")
+    }
+
+    func testAPDUTraceIsOffByDefault() async throws {
+        let com = try Self.com(declaring: [0x61])
+        let dg1 = try Self.dataGroup1()
+        let (reader, _) = makeReader(files: [comId: com, dg1Id: dg1])
+        let passportReader = sessionReader(reading: [.COM, .DG1], apduTrace: false)
+        passportReader.attachDiagnostics(to: reader)
+
+        let messages = await collect { try? await passportReader.readDataGroups(tagReader: reader) }
+
+        XCTAssertFalse(messages.contains { $0.contains("[apdu]") })
+        XCTAssertTrue(messages.contains { $0.contains("DG1 read - ") })
+    }
+
+    // A session that dies halfway through the portrait must still say how large it was.
+    func testPortraitLengthIsReportedAsSoonAsItsFirstChunkArrives() async throws {
+        let com = try Self.com(declaring: [0x75])
+        let dg2 = try Self.dataGroup2(imageBytes: 20_000)
+        let (reader, _) = makeReader(files: [comId: com, dg2Id: dg2])
+        let passportReader = sessionReader(reading: [.COM, .DG2], apduTrace: false)
+        passportReader.attachDiagnostics(to: reader)
+
+        let messages = await collect { try? await passportReader.readDataGroups(tagReader: reader) }
+
+        let apdusLeft = (dg2.count - 223 + 222) / 223
+        XCTAssertTrue(messages.contains {
+            $0.contains("DG2 is \(dg2.count) bytes - \(apdusLeft) more APDUs in 223-byte chunks, ~") && $0.contains("ms per APDU so far")
+        }, "\(messages)")
+    }
 }
 
 // MARK: - Private
 private extension ChipReadTests {
+    func sessionReader(reading dataGroups: [DataGroupId], apduTrace: Bool) -> PassportReader {
+        let passportReader = PassportReader()
+        passportReader.apduTrace = apduTrace
+        passportReader.dataGroupsToRead = dataGroups
+        passportReader.readAllDatagroups = false
+        return passportReader
+    }
+
     static let aesKey: [UInt8] = (0 ..< 32).map { UInt8($0 * 7 & 0xFF) }
     static let desKey: [UInt8] = (0 ..< 16).map { UInt8($0 * 13 & 0xFF) }
 
@@ -819,6 +982,43 @@ private final class MessageBox: @unchecked Sendable {
         lock.lock()
         stored.append(message)
         lock.unlock()
+    }
+}
+
+/// A session whose read resumes a while after CoreNFC delivered each answer, as when the
+/// session's queue is busy.
+private final class LateResumingTransport: APDUTransport, @unchecked Sendable {
+    let chip: SimulatedChip
+    private(set) var lastAnswerDeliveredAt: Date?
+
+    init(chip: SimulatedChip) {
+        self.chip = chip
+    }
+
+    var historicalBytes: Data? { chip.historicalBytes }
+
+    func sendCommand(apdu: NFCISO7816APDU) async throws -> (Data, UInt8, UInt8) {
+        let answer = try await chip.sendCommand(apdu: apdu)
+        lastAnswerDeliveredAt = Date()
+        try await Task.sleep(nanoseconds: 20_000_000)
+        return answer
+    }
+}
+
+/// A phone that loses every command in transit with the same system error.
+private final class ThrowingTransport: APDUTransport {
+    let chip: SimulatedChip
+    let error: Error
+
+    init(chip: SimulatedChip, error: Error) {
+        self.chip = chip
+        self.error = error
+    }
+
+    var historicalBytes: Data? { chip.historicalBytes }
+
+    func sendCommand(apdu: NFCISO7816APDU) async throws -> (Data, UInt8, UInt8) {
+        throw error
     }
 }
 

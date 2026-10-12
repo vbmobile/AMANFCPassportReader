@@ -20,6 +20,20 @@ public enum PassportReaderDiagnostics {
     public static let notificationName = Notification.Name("AMANFCPassportReader.log")
 }
 
+/// An error as the session log reports it: the reader's own errors by case, any other by domain
+/// and code, which is what a system error such as CoreNFC's is looked up by.
+func diagnosticDescription(of error: Error) -> String {
+    if let readerError = error as? NFCPassportReaderError {
+        return "\(readerError)"
+    }
+    let nsError = error as NSError
+    var text = "\(nsError.domain) \(nsError.code): \(nsError.localizedDescription)"
+    if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? NSError {
+        text += " (underlying \(underlying.domain) \(underlying.code))"
+    }
+    return text
+}
+
 extension Logger {
     /// Using your bundle identifier is a great way to ensure a unique identifier.
     private static var subsystem = Bundle.main.bundleIdentifier ?? "AMANFCPassportReader"
@@ -41,6 +55,10 @@ extension Logger {
 
     /// Chip session milestones: access control, data group reads and how the session ended.
     static let session = ReaderLogger(subsystem: subsystem, category: "session")
+
+    /// One line per APDU when `PassportReader.apduTrace` is on: command, lengths, status word
+    /// and timing, never the bytes carried.
+    static let apdu = ReaderLogger(subsystem: subsystem, category: "apdu")
 }
 
 /// Writes to the unified log like `Logger`, and posts everything above debug on
