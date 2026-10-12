@@ -80,14 +80,15 @@ public class PassportReader : NSObject {
     /// fails an extended APDU ends the session, and no iPhone has been shown to carry one.
     public var extendedLengthReads : Bool = false
 
-    /// Logs one line per APDU on the diagnostic channel: command, offset, lengths, status word
-    /// and how long the chip and the phone took, never the bytes carried. Off by default: a
-    /// large portrait takes about a hundred lines.
+    /// Logs one line per APDU on the diagnostic channel: command, offset, lengths, status word,
+    /// the round trip and the phone time between commands, never the bytes carried. Off by
+    /// default: a large portrait takes about a hundred lines.
     public var apduTrace : Bool = false
 
     /// Has the reader session deliver its callbacks, APDU answers included, on a serial queue
     /// of its own rather than the main queue, so the host's UI work cannot hold up the chip
-    /// exchange while iOS keeps counting the tag time. Off by default.
+    /// exchange while iOS keeps counting the tag time. Session delegate callbacks and the
+    /// diagnostic notifications they post then arrive off the main queue. Off by default.
     public var dedicatedSessionQueue : Bool = false
 
     /// About how long iOS keeps a connected tag before invalidating the session. Apple states no
@@ -190,11 +191,7 @@ extension PassportReader : NFCTagReaderSessionDelegate {
         Logger.passportReader.debug( "tagReaderSession:didInvalidateWithError - \(error.localizedDescription)" )
         // The reason the system gives, which a read that already failed on a dead session
         // (NFCError 103) would otherwise never show.
-        if let readerError = error as? NFCReaderError {
-            Logger.session.info( "\(self.sessionClock()) Reader session invalidated - NFCReaderError code \(readerError.errorCode) (\(diagnosticDescription(of: error)))\(self.sinceTagConnected())" )
-        } else {
-            Logger.session.info( "\(self.sessionClock()) Reader session invalidated - \(diagnosticDescription(of: error))\(self.sinceTagConnected())" )
-        }
+        Logger.session.info( "\(self.sessionClock()) Reader session invalidated - \(diagnosticDescription(of: error))\(self.sinceTagConnected())" )
         self.readerSession?.invalidate()
         self.readerSession = nil
 
@@ -263,7 +260,7 @@ extension PassportReader : NFCTagReaderSessionDelegate {
                 Logger.session.info( "\(self.sessionClock()) Tag connected in \(Self.milliseconds(since: connectStartedAt)) ms - application \(passportTag.initialSelectedAID)" )
                 self.updateReaderSessionMessage( alertMessage: NFCViewDisplayMessage.authenticatingWithPassport(0) )
                 
-                let tagReader = TagReader(tag:passportTag)
+                let tagReader = TagReader(tag: passportTag, timesDelivery: self.apduTrace)
                 self.tagReader = tagReader
                 self.attachDiagnostics(to: tagReader)
                 
@@ -316,6 +313,7 @@ extension PassportReader {
     
     func startReading(tagReader : TagReader) async throws -> NFCPassportModel {
         trackingDelegate?.nfcTagDetected()
+        var extendedLengthChecked = false
 
         if !skipPACE {
             do {
@@ -336,6 +334,7 @@ extension PassportReader {
                 trackingDelegate?.readCardAccess(cardAccess: cardAccess)
 
                 await detectExtendedLength(tagReader: tagReader)
+                extendedLengthChecked = true
 
                 Logger.passportReader.info( "Starting Password Authenticated Connection Establishment (PACE)" )
                  
@@ -365,6 +364,8 @@ extension PassportReader {
         
         if skipPACE {
             Logger.session.info( "\(self.sessionClock()) PACE skipped at the host's request - BAC only" )
+        }
+        if !extendedLengthChecked {
             await detectExtendedLengthWithoutPACE(tagReader: tagReader)
         }
 
@@ -693,11 +694,14 @@ extension PassportReader {
     func tagTimeLeft() -> String {
         guard let tagConnectedAt else { return "" }
         let left = Self.tagTimeLimit - Date().timeIntervalSince(tagConnectedAt)
+        guard left >= 0 else {
+            return String(format: "; %.1f s past the ~%.0f s tag time", -left, Self.tagTimeLimit)
+        }
         return String(format: "; %.1f s of the ~%.0f s tag time left", left, Self.tagTimeLimit)
     }
 
-    /// With PACE skipped nothing reads EF.CardAccess, which is where the extended-length check
-    /// otherwise runs. EF.ATR/INFO sits in the master file like EF.CardAccess, so the check
+    /// With PACE skipped, or on a chip without EF.CardAccess, nothing reaches the point where the
+    /// extended-length check otherwise runs. EF.ATR/INFO sits in the master file like EF.CardAccess, so the check
     /// selects it first and the eMRTD application again afterwards; with extended-length reads
     /// off it sends nothing and only reports the historical bytes.
     func detectExtendedLengthWithoutPACE( tagReader: TagReader ) async {
