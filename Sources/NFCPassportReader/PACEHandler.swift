@@ -669,7 +669,7 @@ struct PACEStepTimes {
     mutating func finish(_ step: String) {
         let total = Int((Date().timeIntervalSince(startedAt) * 1000).rounded())
         let chip = Int(((tagReader.chipTime - chipTimeAtStart) * 1000).rounded())
-        steps.append("\(step) \(total) ms (chip \(chip) ms)")
+        steps.append("\(step) \(total) ms (round trips \(chip) ms)")
         startedAt = Date()
         chipTimeAtStart = tagReader.chipTime
     }

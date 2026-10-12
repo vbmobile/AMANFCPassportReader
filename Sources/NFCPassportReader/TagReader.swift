@@ -15,17 +15,49 @@ import CoreNFC
 /// The APDU exchange with the chip, so the reading logic can also run against a simulated chip.
 protocol APDUTransport {
     var historicalBytes: Data? { get }
+    /// When CoreNFC handed over the last answer, for transports that can tell. The gap to the
+    /// read resuming is time spent queued behind other work, not on the radio.
+    var lastAnswerDeliveredAt: Date? { get }
     func sendCommand(apdu: NFCISO7816APDU) async throws -> (Data, UInt8, UInt8)
 }
 
+extension APDUTransport {
+    var lastAnswerDeliveredAt: Date? { nil }
+}
+
 @available(iOS 15, *)
-struct ISO7816TagTransport: APDUTransport {
+final class ISO7816TagTransport: APDUTransport, @unchecked Sendable {
     let tag: NFCISO7816Tag
+    private let lock = NSLock()
+    private var deliveredAt: Date?
+
+    init(tag: NFCISO7816Tag) {
+        self.tag = tag
+    }
 
     var historicalBytes: Data? { tag.historicalBytes }
 
+    var lastAnswerDeliveredAt: Date? {
+        lock.lock()
+        defer { lock.unlock() }
+        return deliveredAt
+    }
+
+    /// The completion handler form, unlike the async one, shows when CoreNFC delivered the
+    /// answer on the session's queue.
     func sendCommand(apdu: NFCISO7816APDU) async throws -> (Data, UInt8, UInt8) {
-        try await tag.sendCommand(apdu: apdu)
+        try await withCheckedThrowingContinuation { continuation in
+            tag.sendCommand(apdu: apdu) { [self] data, sw1, sw2, error in
+                lock.lock()
+                deliveredAt = Date()
+                lock.unlock()
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume(returning: (data, sw1, sw2))
+                }
+            }
+        }
     }
 }
 
@@ -38,7 +70,8 @@ struct FileReadProgress {
     var apdus = 0
     var chunkLength = 0
     var extendedLength = false
-    /// Time spent waiting for the chip's answers; the rest of a read is spent on the phone.
+    /// Time from each command going out to the read resuming with its answer: the radio, the
+    /// chip, CoreNFC and any wait for the session's queue. The rest of a read is the phone's.
     var chipTime: TimeInterval = 0
 
     var chunkDescription: String {
@@ -64,7 +97,10 @@ struct APDUTrace {
     var sw2: UInt8 = 0
     /// Round trips the command took, GET RESPONSE included.
     var exchanges = 0
+    /// Command out to answer back in the reader, as `FileReadProgress.chipTime`.
     var chipTime: TimeInterval = 0
+    /// Of `chipTime`, the time between CoreNFC delivering the answer and the read resuming.
+    var resumeDelay: TimeInterval?
     /// Time the phone spent between the previous answer and this command going out: secure
     /// messaging, parsing and logging.
     var phoneTime: TimeInterval?
@@ -94,7 +130,10 @@ struct APDUTrace {
         } else {
             text += String(format: " - %d B, SW %02X%02X", responseLength, sw1, sw2)
         }
-        text += ", chip \(Self.milliseconds(chipTime)) ms"
+        text += ", round trip \(Self.milliseconds(chipTime)) ms"
+        if let resumeDelay {
+            text += " (resumed \(Self.milliseconds(resumeDelay)) ms after CoreNFC answered)"
+        }
         if exchanges > 1 {
             text += " over \(exchanges) exchanges"
         }
@@ -222,7 +261,7 @@ public class TagReader {
         set { withStateLock { storedAPDUCount = newValue } }
     }
 
-    /// Time spent waiting for the chip's answers over the session.
+    /// Time spent in APDU round trips over the session, as `FileReadProgress.chipTime`.
     private(set) var chipTime : TimeInterval {
         get { withStateLock { storedChipTime } }
         set { withStateLock { storedChipTime = newValue } }
@@ -805,19 +844,25 @@ public class TagReader {
         return rep
     }
 
-    /// One APDU round trip, timed: the time the chip takes, the radio included, against the
-    /// time the phone spends between APDUs.
+    /// One APDU round trip, timed: command out to answer back, which holds the radio, the chip,
+    /// CoreNFC and any wait for the session's queue, against the time the phone spends between
+    /// APDUs.
     private func exchange( _ apdu: NFCISO7816APDU ) async throws -> (Data, UInt8, UInt8) {
         let sentAt = Date()
         let phoneTime = lastAnswerAt.map { sentAt.timeIntervalSince($0) }
         defer {
             let answeredAt = Date()
             let elapsed = answeredAt.timeIntervalSince(sentAt)
+            let resumeDelay = tag.lastAnswerDeliveredAt.flatMap { $0 >= sentAt ? answeredAt.timeIntervalSince($0) : nil }
             chipTime += elapsed
             lastAnswerAt = answeredAt
             if activeTrace != nil {
                 activeTrace?.exchanges += 1
                 activeTrace?.chipTime += elapsed
+                if let resumeDelay {
+                    let earlier = activeTrace?.resumeDelay ?? 0
+                    activeTrace?.resumeDelay = earlier + resumeDelay
+                }
                 if activeTrace?.phoneTime == nil {
                     activeTrace?.phoneTime = phoneTime
                 }
