@@ -111,6 +111,12 @@ public class PassportReader : NSObject {
     public func overrideNFCDataAmountToRead( amount: Int ) {
         dataAmountToReadOverride = amount
     }
+
+    /// Goes back to the reader's own read length after `overrideNFCDataAmountToRead(amount:)`,
+    /// which also lets extended-length reads apply again.
+    public func clearNFCDataAmountOverride() {
+        dataAmountToReadOverride = nil
+    }
     
     public func readPassport( mrzKey : String, tags : [DataGroupId] = [], aaChallenge: [UInt8]? = nil, skipSecureElements : Bool = true, skipCA : Bool = false, skipPACE : Bool = false, useExtendedMode : Bool = false, customDisplayMessage : ((NFCViewDisplayMessage) -> String?)? = nil) async throws -> NFCPassportModel {
         
@@ -353,6 +359,11 @@ extension PassportReader {
             _ = try await tagReader.selectPassportApplication()
         }
         
+        if skipPACE {
+            Logger.session.info( "\(self.sessionClock()) PACE skipped at the host's request - BAC only" )
+            await detectExtendedLengthWithoutPACE(tagReader: tagReader)
+        }
+
         // If either PACE isn't supported, we failed whilst doing PACE or we didn't even attempt it, then fall back to BAC
         if passport.PACEStatus != .success {
             do {
@@ -681,6 +692,20 @@ extension PassportReader {
         guard let tagConnectedAt else { return "" }
         let left = Self.tagTimeLimit - Date().timeIntervalSince(tagConnectedAt)
         return String(format: "; %.1f s of the ~%.0f s tag time left", left, Self.tagTimeLimit)
+    }
+
+    /// With PACE skipped nothing reads EF.CardAccess, which is where the extended-length check
+    /// otherwise runs. EF.ATR/INFO sits in the master file like EF.CardAccess, so the check
+    /// selects it first and the eMRTD application again afterwards; with extended-length reads
+    /// off it sends nothing and only reports the historical bytes.
+    func detectExtendedLengthWithoutPACE( tagReader: TagReader ) async {
+        guard extendedLengthReads else {
+            await detectExtendedLength(tagReader: tagReader)
+            return
+        }
+        _ = try? await tagReader.selectMasterFile()
+        await detectExtendedLength(tagReader: tagReader)
+        _ = try? await tagReader.selectPassportApplication()
     }
 
     static func kind( of tag: NFCTag ) -> String {

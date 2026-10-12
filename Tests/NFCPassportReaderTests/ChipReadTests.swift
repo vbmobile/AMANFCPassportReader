@@ -606,6 +606,45 @@ final class ChipReadTests: XCTestCase {
         }, "\(messages)")
     }
 
+    func testBACOnlySessionChecksExtendedLengthFromTheMasterFileAndReselectsTheApplication() async throws {
+        let atrInfo: [UInt8] = [0x7F, 0x66, 0x08, 0x02, 0x02, 0x04, 0x00, 0x02, 0x02, 0x04, 0x00]
+        let chip = SimulatedChip(files: [[0x2F, 0x01]: atrInfo])
+        let reader = TagReader(transport: chip)
+        let passportReader = PassportReader()
+        passportReader.extendedLengthReads = true
+
+        await passportReader.detectExtendedLengthWithoutPACE(tagReader: reader)
+
+        XCTAssertEqual(reader.extendedResponseLimit, 1024)
+        let selects = chip.exchanges.filter { $0.instruction == 0xA4 }.map(\.p1)
+        XCTAssertEqual(selects.first, 0x00)
+        XCTAssertEqual(selects.last, 0x04)
+    }
+
+    func testBACOnlySessionSendsNothingForExtendedLengthWhileItIsOff() async {
+        let chip = SimulatedChip(files: [:])
+        chip.historicalBytes = Data([0x80, 0x73, 0x00, 0x00, 0x40])
+        let reader = TagReader(transport: chip)
+
+        let messages = await collect { await PassportReader().detectExtendedLengthWithoutPACE(tagReader: reader) }
+
+        XCTAssertTrue(chip.exchanges.isEmpty)
+        XCTAssertTrue(messages.contains { $0.contains("extended-length reads off") }, "\(messages)")
+    }
+
+    func testClearedReadLengthOverrideNoLongerReachesTheNextSession() async {
+        let (reader, _) = makeReader(files: [:])
+        let passportReader = PassportReader()
+        passportReader.overrideNFCDataAmountToRead(amount: 0xA0)
+
+        let overridden = await collect { passportReader.attachDiagnostics(to: reader) }
+        passportReader.clearNFCDataAmountOverride()
+        let cleared = await collect { passportReader.attachDiagnostics(to: reader) }
+
+        XCTAssertTrue(overridden.contains { $0.contains("read length 160 bytes (host override)") }, "\(overridden)")
+        XCTAssertTrue(cleared.contains { $0.contains("Reader options") && !$0.contains("host override") }, "\(cleared)")
+    }
+
     func testCardAccessStillReadsInPlainModeTheUpstreamWay() async throws {
         let cardAccess = Self.file(tag: 0x31, totalLength: 22)
         let chip = SimulatedChip(files: [[0x01, 0x1C]: cardAccess])
