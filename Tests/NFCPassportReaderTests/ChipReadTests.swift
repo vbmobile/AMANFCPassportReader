@@ -807,6 +807,25 @@ final class ChipReadTests: XCTestCase {
         XCTAssertFalse(messages.contains { $0.uppercased().contains("DEADBEEF") || $0.uppercased().contains("DE AD BE EF") })
     }
 
+    func testAPDUTraceReportsACommandThatFailsInTransit() async throws {
+        let com = try Self.com(declaring: [0x61])
+        let (simulated, chip) = makeReader(files: [comId: com])
+        let underlying = NSError(domain: "ProbeTransport", code: 7)
+        let failure = NSError(domain: "ProbeSession", code: 42, userInfo: [NSUnderlyingErrorKey: underlying])
+        let reader = TagReader(transport: ThrowingTransport(chip: chip, error: failure))
+        reader.secureMessaging = simulated.secureMessaging
+        let passportReader = sessionReader(reading: [.COM], apduTrace: true)
+        passportReader.attachDiagnostics(to: reader)
+
+        let messages = await collect { try? await passportReader.readDataGroups(tagReader: reader) }
+
+        let trace = messages.filter { $0.contains("[apdu]") }
+        XCTAssertTrue(trace.contains {
+            $0.contains("APDU 1 READ BINARY SFI 1E offset 0, Le 223, SM - failed: ProbeSession 42: ")
+                && $0.contains("(underlying ProbeTransport 7), round trip ")
+        }, "\(trace)")
+    }
+
     func testAPDUTraceIsOffByDefault() async throws {
         let com = try Self.com(declaring: [0x61])
         let dg1 = try Self.dataGroup1()
@@ -983,6 +1002,23 @@ private final class LateResumingTransport: APDUTransport, @unchecked Sendable {
         lastAnswerDeliveredAt = Date()
         try await Task.sleep(nanoseconds: 20_000_000)
         return answer
+    }
+}
+
+/// A phone that loses every command in transit with the same system error.
+private final class ThrowingTransport: APDUTransport {
+    let chip: SimulatedChip
+    let error: Error
+
+    init(chip: SimulatedChip, error: Error) {
+        self.chip = chip
+        self.error = error
+    }
+
+    var historicalBytes: Data? { chip.historicalBytes }
+
+    func sendCommand(apdu: NFCISO7816APDU) async throws -> (Data, UInt8, UInt8) {
+        throw error
     }
 }
 

@@ -53,6 +53,18 @@ final class PassportReaderDiagnosticsTests: XCTestCase {
         XCTAssertTrue(PassportReader.sessionEndReason(for: .UnknownImageFormat).hasPrefix("error - "))
     }
 
+    func testSystemErrorsAreDescribedByDomainCodeAndUnderlyingError() {
+        let underlying = NSError(domain: "ProbeTransport", code: 7)
+        let error = NSError(
+            domain: "ProbeSession",
+            code: 42,
+            userInfo: [NSLocalizedDescriptionKey: "probe failed", NSUnderlyingErrorKey: underlying]
+        )
+
+        XCTAssertEqual(diagnosticDescription(of: error), "ProbeSession 42: probe failed (underlying ProbeTransport 7)")
+        XCTAssertEqual(diagnosticDescription(of: NFCPassportReaderError.TimeOutError), "\(NFCPassportReaderError.TimeOutError)")
+    }
+
     func testDomainParameterIdentifiersAreNamed() {
         XCTAssertEqual(PACEInfo.domainParameterName(13), "brainpoolP256r1")
         XCTAssertEqual(PACEInfo.domainParameterName(12), "NIST P-256")

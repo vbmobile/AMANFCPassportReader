@@ -28,11 +28,15 @@ extension APDUTransport {
 @available(iOS 15, *)
 final class ISO7816TagTransport: APDUTransport, @unchecked Sendable {
     let tag: NFCISO7816Tag
+    /// Records when CoreNFC delivers each answer, for the APDU trace. Off, commands go through
+    /// CoreNFC's async API as they always have.
+    let timesDelivery: Bool
     private let lock = NSLock()
     private var deliveredAt: Date?
 
-    init(tag: NFCISO7816Tag) {
+    init(tag: NFCISO7816Tag, timesDelivery: Bool = false) {
         self.tag = tag
+        self.timesDelivery = timesDelivery
     }
 
     var historicalBytes: Data? { tag.historicalBytes }
@@ -43,9 +47,20 @@ final class ISO7816TagTransport: APDUTransport, @unchecked Sendable {
         return deliveredAt
     }
 
+    func sendCommand(apdu: NFCISO7816APDU) async throws -> (Data, UInt8, UInt8) {
+        guard timesDelivery else {
+            return try await tag.sendCommand(apdu: apdu)
+        }
+        return try await sendTimingDelivery(apdu: apdu)
+    }
+}
+
+// MARK: - Private
+@available(iOS 15, *)
+private extension ISO7816TagTransport {
     /// The completion handler form, unlike the async one, shows when CoreNFC delivered the
     /// answer on the session's queue.
-    func sendCommand(apdu: NFCISO7816APDU) async throws -> (Data, UInt8, UInt8) {
+    func sendTimingDelivery(apdu: NFCISO7816APDU) async throws -> (Data, UInt8, UInt8) {
         try await withCheckedThrowingContinuation { continuation in
             tag.sendCommand(apdu: apdu) { [self] data, sw1, sw2, error in
                 lock.lock()
@@ -217,8 +232,8 @@ public class TagReader {
     private var activeTrace : APDUTrace?
     private var lastAnswerAt : Date?
 
-    init( tag: NFCISO7816Tag ) {
-        self.tag = ISO7816TagTransport(tag: tag)
+    init( tag: NFCISO7816Tag, timesDelivery: Bool = false ) {
+        self.tag = ISO7816TagTransport(tag: tag, timesDelivery: timesDelivery)
     }
 
     init( transport: APDUTransport ) {
