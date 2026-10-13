@@ -17,7 +17,7 @@ import OSLog
 /// `"level"` and the log category under `"category"` in `userInfo`. Debug events
 /// are never posted: they carry access keys, session keys and APDU contents.
 public enum PassportReaderDiagnostics {
-    public static let notificationName = Notification.Name("AMANFCPassportReader.log")
+    public static let notificationName = Notification.Name("NFCPassportReader.log")
 }
 
 /// An error as the session log reports it: the reader's own errors by case, any other by domain
@@ -36,7 +36,7 @@ func diagnosticDescription(of error: Error) -> String {
 
 extension Logger {
     /// Using your bundle identifier is a great way to ensure a unique identifier.
-    private static var subsystem = Bundle.main.bundleIdentifier ?? "AMANFCPassportReader"
+    private static var subsystem = Bundle.main.bundleIdentifier ?? "NFCPassportReader"
 
     /// Tag Reader logs
     static let passportReader = ReaderLogger(subsystem: subsystem, category: "passportReader")

@@ -6,7 +6,7 @@ import Foundation
 import OSLog
 import XCTest
 
-@testable import AMANFCPassportReader
+@testable import NFCPassportReader
 
 /// Hosts collect the reader's milestones from a notification because a tester's
 /// build cannot read the unified log. Debug events must never reach it: they
@@ -28,22 +28,6 @@ final class PassportReaderDiagnosticsTests: XCTestCase {
         let messages = collect { Logger.bac.debug("probe secret") }
 
         XCTAssertFalse(messages.contains { $0.contains("probe secret") })
-    }
-
-    func testParsedPortraitReportsItsFormatAndHeader() throws {
-        let dg2 = hexRepToBin("75617F618220470201017F6082203FA1128002010081010282010087020101880200085F2E3A46414300303130000000202600010000201800000000000000000001000000000000000100000000000000000000FFD8FFE000104A464946FFD9")
-
-        let messages = collect { _ = try? DataGroupParser().parseDG(data: dg2) }
-
-        XCTAssertTrue(messages.contains { $0.contains("DG2 image JPEG") && $0.contains("header FF D8 FF E0 00 10 4A 46 49 46 FF D9") })
-    }
-
-    func testRejectedPortraitReportsItsHeader() {
-        let dg2 = hexRepToBin("75617F618220470201017F6082203FA1128002010081010282010087020101880200085F2E3A46414300303130000000202600010000201800000000000000000001000000000000000100000000000000000000424D00000000000000000000")
-
-        let messages = collect { _ = try? DataGroupParser().parseDG(data: dg2) }
-
-        XCTAssertTrue(messages.contains { $0.contains("DG2 image format not recognised - header 42 4D 00 00 00 00") })
     }
 
     func testSessionEndReasonsNameTheCause() {

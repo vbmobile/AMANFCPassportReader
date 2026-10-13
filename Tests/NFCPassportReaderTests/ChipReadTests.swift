@@ -5,7 +5,7 @@
 import CoreNFC
 import XCTest
 
-@testable import AMANFCPassportReader
+@testable import NFCPassportReader
 
 /// Data group reads against a simulated chip, APDU by APDU: how many round trips a file takes,
 /// how the reader falls back when a chip refuses a read, and how secure messaging carries

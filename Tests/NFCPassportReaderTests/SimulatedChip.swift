@@ -5,7 +5,7 @@
 import CoreNFC
 import Foundation
 
-@testable import AMANFCPassportReader
+@testable import NFCPassportReader
 
 /// An eMRTD chip at APDU level: SELECT and READ BINARY over transparent files, in plain mode or
 /// under ICAO 9303-11 secure messaging keyed like the reader. It enforces short and extended

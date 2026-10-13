@@ -162,7 +162,7 @@ public class PassportReader : NSObject {
         Logger.session.info( "Chip session started at \(Self.timestamp(startedAt)) - reading \(requested)" )
 
         if NFCTagReaderSession.readingAvailable {
-            let sessionQueue = dedicatedSessionQueue ? DispatchQueue(label: "AMANFCPassportReader.session") : nil
+            let sessionQueue = dedicatedSessionQueue ? DispatchQueue(label: "NFCPassportReader.session") : nil
             readerSession = NFCTagReaderSession(pollingOption: [.iso14443], delegate: self, queue: sessionQueue)
             
             self.updateReaderSessionMessage( alertMessage: NFCViewDisplayMessage.requestPresentPassport )
