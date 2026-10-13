@@ -1,3 +1,8 @@
+2.3.5
+   Read data groups in fewer, larger APDUs and fetch each data group's first chunk by short file identifier
+   Opt-in extended-length reads (`extendedLengthReads`) and APDU trace (`apduTrace`), off by default
+   Session milestones with timings posted on the `AMANFCPassportReader.log` notification
+   Accept every JPEG and JPEG 2000 portrait shape in DG2
 2.3.4
    Same code as 2.3.3-vb.2, re-tagged under plain x.y.z versioning
 2.3.3-vb.2
