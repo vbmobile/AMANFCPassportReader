@@ -1,3 +1,8 @@
+v2.1.3
+   Read data groups in fewer, larger APDUs and fetch each data group's first chunk by short file identifier
+   Opt-in extended-length reads (`extendedLengthReads`) and APDU trace (`apduTrace`), off by default
+   Session milestones with timings posted on the `NFCPassportReader.log` notification
+
 v2.1.2
    Added tracking delegate and improved error handling - thanks to @mikahautz-mohemian, @josiporezic-mohemian and @lauraheiger-mohemian
    Fix to readme example - thanks @Daymox
