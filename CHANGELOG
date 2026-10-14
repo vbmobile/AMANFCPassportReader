@@ -1,3 +1,5 @@
+2.3.6
+   OpenSSL 3.6.5000 XCFramework served from VisionBox Azure storage instead of the OpenSSL-Package GitHub release asset (same binary and checksum)
 2.3.5
    Read data groups in fewer, larger APDUs and fetch each data group's first chunk by short file identifier
    Opt-in extended-length reads (`extendedLengthReads`) and APDU trace (`apduTrace`), off by default

@@ -1,7 +1,14 @@
+include:
+  - project: mobile-id/infra/ci-templates
+    ref: main
+    file:
+      - azure-templates.yml
+
 image: macos-sequoia
 
 stages:
   - test
+  - deploy
 
 workflow:
   rules:
@@ -22,3 +29,19 @@ ios_tests:
     paths:
       - reports/
     expire_in: 1 week
+
+# Manual. Copies the upstream OpenSSL XCFramework, byte for byte, to ios/OpenSSL/ on Azure; Package.swift points its binary target there.
+publish_openssl:
+  stage: deploy
+  when: manual
+  needs: []
+  variables:
+    AZURE_STORAGE_DESTINATION: $AZURE_STORAGE_DESTINATION_IOS
+    APP_DIRECTORY: ./openssl-publish
+    OPENSSL_VERSION: "3.6.5000"
+    OPENSSL_CHECKSUM: "f50188506490c643715489217d32e458d06cee5579399ff616f0ce2038169fea"
+  extends: .publish-azure
+  before_script:
+    - mkdir -p "$APP_DIRECTORY/OpenSSL"
+    - curl -fsSL --retry 3 -o "$APP_DIRECTORY/OpenSSL/OpenSSL-$OPENSSL_VERSION.xcframework.zip" "https://github.com/krzyzanowskim/OpenSSL/releases/download/$OPENSSL_VERSION/OpenSSL.xcframework.zip"
+    - echo "$OPENSSL_CHECKSUM  $APP_DIRECTORY/OpenSSL/OpenSSL-$OPENSSL_VERSION.xcframework.zip" | sha256sum -c -

@@ -15,7 +15,6 @@ let package = Package(
     dependencies: [
         // Dependencies declare other packages that this package depends on.
         // .package(url: /* package url */, from: "1.0.0"),
-        .package(url: "https://github.com/krzyzanowskim/OpenSSL-Package.git", .upToNextMinor(from: "3.6.0001")),
     ],
     targets: [
         // Targets are the basic building blocks of a package. A target can define a module or a test suite.
@@ -24,15 +23,21 @@ let package = Package(
         .target(
             name: "AMANFCPassportReader",
             dependencies: [
-              .product(name: "OpenSSL", package: "OpenSSL-Package")
+              "OpenSSL"
             ],
             path: "Sources/NFCPassportReader"),
         .testTarget(
             name: "AMANFCPassportReaderTests",
             dependencies: [
               "AMANFCPassportReader",
-              .product(name: "OpenSSL", package: "OpenSSL-Package")
+              "OpenSSL"
             ],
             path: "Tests/NFCPassportReaderTests"),
+        // OpenSSL-Package 3.6.5000's XCFramework, re-hosted unchanged: GitHub release-asset downloads stall past SwiftPM's timeout on the corporate network.
+        .binaryTarget(
+            name: "OpenSSL",
+            url: "https://vbmobileidstorage.blob.core.windows.net/ios/OpenSSL/OpenSSL-3.6.5000.xcframework.zip",
+            checksum: "f50188506490c643715489217d32e458d06cee5579399ff616f0ce2038169fea"
+        ),
     ]
 )
